@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Explorateur de données</title>
+    <link rel="stylesheet" href="styles.css" />
+    <script defer src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    <script defer src="app.js"></script>
+  </head>
+  <body>
+    <header>
+      <h1>Analyseur de fichiers CSV &amp; XLSX</h1>
+      <p>
+        Importez un fichier volumineux, recherchez rapidement plusieurs mots-clés et
+        exportez les résultats filtrés.
+      </p>
+    </header>
+
+    <main>
+      <section class="uploader" id="drop-zone">
+        <div class="uploader__content">
+          <h2>Importer des fichiers</h2>
+          <div class="uploader__modes">
+            <label class="radio">
+              <input
+                type="radio"
+                name="analysis-mode"
+                value="single"
+                checked
+              />
+              Analyse d'un fichier
+            </label>
+            <label class="radio">
+              <input type="radio" name="analysis-mode" value="compare" />
+              Comparaison de fichiers
+            </label>
+          </div>
+
+          <div id="single-upload" class="uploader__panel">
+            <p>Glissez-déposez votre fichier ici ou</p>
+            <label class="button" for="file-input">Sélectionnez un fichier</label>
+            <input id="file-input" type="file" accept=".csv,.xlsx,.xls" />
+          </div>
+
+          <div id="compare-upload" class="uploader__panel" hidden>
+            <p>
+              Sélectionnez un fichier source de référence puis un fichier à comparer.
+              Vous pouvez également déposer les deux fichiers directement dans la zone.
+            </p>
+            <div class="uploader__inputs">
+              <label class="button" for="reference-input">Fichier de référence</label>
+              <input id="reference-input" type="file" accept=".csv,.xlsx,.xls" />
+              <span class="uploader__filename" id="reference-name"></span>
+            </div>
+            <div class="uploader__inputs">
+              <label class="button" for="comparison-input">Fichier à comparer</label>
+              <input id="comparison-input" type="file" accept=".csv,.xlsx,.xls" />
+              <span class="uploader__filename" id="comparison-name"></span>
+            </div>
+            <p class="uploader__summary" id="keywords-summary"></p>
+          </div>
+
+          <div class="progress" aria-hidden="true">
+            <div class="progress__bar" id="progress-bar"></div>
+          </div>
+          <p class="progress__label" id="progress-label"></p>
+          <p class="error" id="error-message" role="alert"></p>
+        </div>
+      </section>
+
+      <section class="controls" id="controls" hidden>
+        <h2>Recherche</h2>
+        <div class="controls__grid">
+          <label>
+            Mots-clés (séparés par des virgules, espaces ou opérateurs AND/OR/NOT)
+            <input id="search-input" type="text" placeholder="ex: client, premium AND NOT résilié" />
+          </label>
+          <label class="checkbox">
+            <input id="case-sensitive" type="checkbox" /> Sensible à la casse
+          </label>
+          <label class="checkbox">
+            <input id="exact-match" type="checkbox" /> Correspondance exacte
+          </label>
+          <div class="buttons">
+            <button id="search-button" class="button">Rechercher</button>
+            <button id="reset-button" class="button button--ghost">Réinitialiser</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="results" id="results" hidden>
+        <header class="results__header">
+          <div>
+            <h2>Résultats</h2>
+            <p id="result-stats"></p>
+          </div>
+          <div class="buttons results__exports">
+            <button id="copy-button" class="button button--ghost">Copier</button>
+            <button id="export-csv-button" class="button button--ghost">Exporter CSV</button>
+            <button id="export-xlsx-button" class="button button--ghost">Exporter XLSX</button>
+          </div>
+        </header>
+        <div class="table-wrapper">
+          <table id="data-table" aria-live="polite"></table>
+        </div>
+        <div class="pagination" id="pagination" hidden>
+          <button id="prev-page" class="button button--ghost" disabled>Précédent</button>
+          <span id="page-info"></span>
+          <button id="next-page" class="button button--ghost" disabled>Suivant</button>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <small>
+        Les recherches sont effectuées localement dans votre navigateur.
+      </small>
+    </footer>
+  </body>
+</html>

@@ -1,0 +1,8 @@
+{
+  "name": "bp2",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "test": "node tests/run-tests.js"
+  }
+}
