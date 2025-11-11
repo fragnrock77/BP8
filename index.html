@@ -77,6 +77,22 @@
             Mots-clés (séparés par des virgules, espaces ou opérateurs AND/OR/NOT)
             <input id="search-input" type="text" placeholder="ex: client, premium AND NOT résilié" />
           </label>
+          <fieldset
+            id="column-filter"
+            class="column-filter"
+            role="group"
+            aria-label="Filtrage par colonne"
+            disabled
+          >
+            <legend>Rechercher dans</legend>
+            <p id="column-filter-label" class="column-filter__summary">Colonnes : Toutes</p>
+            <p
+              id="column-filter-live"
+              class="visually-hidden"
+              aria-live="polite"
+              role="status"
+            ></p>
+          </fieldset>
           <label class="checkbox">
             <input id="case-sensitive" type="checkbox" /> Sensible à la casse
           </label>
@@ -88,6 +104,7 @@
             <button id="reset-button" class="button button--ghost">Réinitialiser</button>
           </div>
         </div>
+        <p id="live-feedback" class="visually-hidden" aria-live="polite"></p>
       </section>
 
       <section class="results" id="results" hidden>
