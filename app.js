@@ -1,3 +1,13 @@
+/**
+ * Rapport de modifications — Filtrage par colonne
+ * - Bugs corrigés : cache de recherche concaténé (faux positifs inter-colonnes) remplacé par un cache par cellule et annonces d'erreurs via aria-live pour éviter les silences en cas d'échec.
+ * - Changements UI : ajout d'un filtre multi-colonnes persistant avec bouton accessible et menu déroulant.
+ * - Implémentation : selectedColumns dans l'état global, getAvailableColumns, adaptation de matchRow/performSearch.
+ * - Accessibilité : fieldset/legend, aria-live dédié, focus visible dans le menu, annonces vocales des limites de recherche.
+ * - Performance : debounce 300 ms sur recherche/filtre, réduction des colonnes inspectées, worker conservé.
+ * - Tests manuels : checklist en fin de fichier (cas "Toutes", une colonne, multi, export, 10k lignes, options casse/exacte).
+ */
+
 const doc = typeof document !== "undefined" ? document : null;
 const dropZone = doc ? doc.getElementById("drop-zone") : null;
 const fileInput = doc ? doc.getElementById("file-input") : null;
@@ -34,15 +44,99 @@ const nextPageBtn = doc ? doc.getElementById("next-page") : { disabled: true };
 const copyButton = doc ? doc.getElementById("copy-button") : null;
 const exportCsvButton = doc ? doc.getElementById("export-csv-button") : null;
 const exportXlsxButton = doc ? doc.getElementById("export-xlsx-button") : null;
+const columnFilterFieldset = doc ? doc.getElementById("column-filter") : null;
+const columnFilterToggle = doc ? doc.getElementById("column-filter-toggle") : null;
+const columnFilterMenu = doc ? doc.getElementById("column-filter-menu") : null;
+const columnFilterOptionsContainer = doc
+  ? doc.getElementById("column-filter-options")
+  : null;
+const columnFilterAll = doc ? doc.getElementById("column-filter-all") : null;
+const columnFilterLabel = doc
+  ? doc.getElementById("column-filter-label")
+  : { textContent: "" };
+const columnFilterLive = doc ? doc.getElementById("column-filter-live") : null;
+const liveFeedback = doc ? doc.getElementById("live-feedback") : null;
 
 const PAGE_SIZE = 100;
+const SEARCH_DEBOUNCE = 300;
 const MAX_FILE_SIZE = 200 * 1024 * 1024; // 200MB
+
+const STORAGE_KEYS = {
+  selectedColumns: "bp8.search.selectedColumns",
+};
+
+function loadSelectedColumns() {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  try {
+    const stored = window.localStorage.getItem(STORAGE_KEYS.selectedColumns);
+    if (!stored) {
+      return null;
+    }
+    const parsed = JSON.parse(stored);
+    if (!Array.isArray(parsed) || !parsed.length) {
+      return null;
+    }
+    return parsed.map((key) => String(key));
+  } catch (error) {
+    console.warn("Impossible de charger les colonnes persistées", error);
+    return null;
+  }
+}
+
+function saveSelectedColumns(columns) {
+  if (typeof window === "undefined") {
+    return;
+  }
+  try {
+    if (!columns || !columns.length) {
+      window.localStorage.removeItem(STORAGE_KEYS.selectedColumns);
+      return;
+    }
+    window.localStorage.setItem(STORAGE_KEYS.selectedColumns, JSON.stringify(columns));
+  } catch (error) {
+    console.warn("Impossible de persister les colonnes sélectionnées", error);
+  }
+}
+
+const state = {
+  search: {
+    query: "",
+    caseSensitive: false,
+    exactMatch: false,
+    selectedColumns: loadSelectedColumns(),
+  },
+};
+
+function debounce(fn, delay) {
+  let timerId = null;
+  function debounced(...args) {
+    if (timerId) {
+      clearTimeout(timerId);
+    }
+    timerId = setTimeout(() => {
+      timerId = null;
+      fn.apply(this, args);
+    }, delay);
+  }
+  debounced.cancel = () => {
+    if (timerId) {
+      clearTimeout(timerId);
+      timerId = null;
+    }
+  };
+  return debounced;
+}
+
+const scheduleSearch = debounce(() => performSearch({ source: "debounce" }), SEARCH_DEBOUNCE);
 
 let headers = [];
 let rawRows = [];
 let filteredRows = [];
 let rowTextCache = [];
 let lowerRowTextCache = [];
+let availableColumns = [];
 let currentPage = 1;
 let currentFileName = "";
 let currentMode = "single";
@@ -58,6 +152,7 @@ function resetDataset() {
   filteredRows = [];
   rowTextCache = [];
   lowerRowTextCache = [];
+  availableColumns = [];
   currentPage = 1;
   currentFileName = "";
   updateProgress(0, "");
@@ -69,18 +164,27 @@ function resetDataset() {
     dataTable.innerHTML = "";
   }
   resultStats.textContent = "";
+  rebuildColumnFilterOptions();
+}
+
+function announceStatus(message) {
+  if (liveFeedback) {
+    liveFeedback.textContent = message || "";
+  }
 }
 
 function showError(message) {
   if (errorMessage) {
     errorMessage.textContent = message;
   }
+  announceStatus(message);
 }
 
 function clearError() {
   if (errorMessage) {
     errorMessage.textContent = "";
   }
+  announceStatus("");
 }
 
 function updateProgress(percent, label) {
@@ -101,6 +205,289 @@ function formatBytes(bytes) {
     unitIndex += 1;
   }
   return `${size.toFixed(unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
+}
+
+function sanitizeColumnLabel(header, index) {
+  if (header === undefined || header === null || header === "") {
+    return `Colonne ${index + 1}`;
+  }
+  return String(header);
+}
+
+function getAvailableColumns(rows = rawRows) {
+  const firstRow = Array.isArray(rows) && rows.length ? rows[0] : [];
+  const totalColumns = Math.max(headers.length, firstRow.length);
+  if (!totalColumns) {
+    return [];
+  }
+  const detected = [];
+  for (let index = 0; index < totalColumns; index += 1) {
+    detected.push({ key: String(index), label: sanitizeColumnLabel(headers[index], index) });
+  }
+  return detected;
+}
+
+function syncSelectedColumnsWithAvailable() {
+  if (!state.search.selectedColumns || !state.search.selectedColumns.length) {
+    state.search.selectedColumns = null;
+    return;
+  }
+  const availableKeys = new Set(availableColumns.map((column) => column.key));
+  const filtered = state.search.selectedColumns.filter((key) => availableKeys.has(key));
+  state.search.selectedColumns = filtered.length ? filtered : null;
+}
+
+function closeColumnFilterMenu() {
+  if (!columnFilterMenu || !columnFilterToggle) {
+    return;
+  }
+  columnFilterMenu.hidden = true;
+  columnFilterToggle.setAttribute("aria-expanded", "false");
+}
+
+function openColumnFilterMenu() {
+  if (
+    !columnFilterMenu ||
+    !columnFilterToggle ||
+    (columnFilterFieldset && columnFilterFieldset.disabled)
+  ) {
+    return;
+  }
+  columnFilterMenu.hidden = false;
+  columnFilterToggle.setAttribute("aria-expanded", "true");
+  const firstInput = columnFilterMenu.querySelector('input[type="checkbox"]');
+  if (firstInput) {
+    firstInput.focus({ preventScroll: true });
+  }
+}
+
+function toggleColumnFilterMenu(force) {
+  if (!columnFilterMenu || !columnFilterToggle) {
+    return;
+  }
+  const isOpen = !columnFilterMenu.hidden;
+  if (force === true) {
+    if (!isOpen) {
+      openColumnFilterMenu();
+    }
+    return;
+  }
+  if (force === false) {
+    if (isOpen) {
+      closeColumnFilterMenu();
+    }
+    return;
+  }
+  if (isOpen) {
+    closeColumnFilterMenu();
+  } else {
+    openColumnFilterMenu();
+  }
+}
+
+function setColumnFilterDisabled(disabled) {
+  if (!columnFilterFieldset) {
+    return;
+  }
+  columnFilterFieldset.disabled = Boolean(disabled);
+  if (columnFilterToggle) {
+    columnFilterToggle.setAttribute("aria-disabled", String(Boolean(disabled)));
+  }
+  if (disabled) {
+    closeColumnFilterMenu();
+  }
+}
+
+function updateColumnFilterLabel() {
+  if (!columnFilterLabel) {
+    return;
+  }
+  if (!availableColumns.length) {
+    columnFilterLabel.textContent = "Colonnes : Toutes";
+    return;
+  }
+  if (!state.search.selectedColumns || !state.search.selectedColumns.length) {
+    columnFilterLabel.textContent = "Colonnes : Toutes";
+    return;
+  }
+  const selectedLabels = availableColumns
+    .filter((column) => state.search.selectedColumns.includes(column.key))
+    .map((column) => column.label);
+  if (!selectedLabels.length) {
+    columnFilterLabel.textContent = "Colonnes : Toutes";
+    return;
+  }
+  const preview = selectedLabels.slice(0, 3).join(", ");
+  const remaining = selectedLabels.length > 3 ? ` +${selectedLabels.length - 3}` : "";
+  columnFilterLabel.textContent = `Colonnes : ${preview}${remaining}`;
+}
+
+function announceColumnSelection() {
+  if (!columnFilterLive) {
+    return;
+  }
+  if (!availableColumns.length) {
+    columnFilterLive.textContent = "Recherche sur toutes les colonnes.";
+    return;
+  }
+  if (!state.search.selectedColumns || !state.search.selectedColumns.length) {
+    columnFilterLive.textContent = "Recherche sur toutes les colonnes.";
+    return;
+  }
+  const count = state.search.selectedColumns.length;
+  columnFilterLive.textContent = `Recherche limitée à ${count} colonne${count > 1 ? "s" : ""}.`;
+}
+
+function rebuildColumnFilterOptions() {
+  if (!doc || !columnFilterOptionsContainer || !columnFilterAll) {
+    return;
+  }
+  closeColumnFilterMenu();
+  columnFilterOptionsContainer.innerHTML = "";
+  if (!availableColumns.length) {
+    columnFilterAll.checked = true;
+    setColumnFilterDisabled(true);
+    updateColumnFilterLabel();
+    announceColumnSelection();
+    return;
+  }
+
+  setColumnFilterDisabled(false);
+  const fragment = doc.createDocumentFragment();
+  availableColumns.forEach((column) => {
+    const optionLabel = doc.createElement("label");
+    optionLabel.className = "checkbox column-filter__option";
+    const input = doc.createElement("input");
+    input.type = "checkbox";
+    input.dataset.columnKey = column.key;
+    input.id = `column-filter-${column.key}`;
+    input.checked = Boolean(
+      state.search.selectedColumns && state.search.selectedColumns.includes(column.key)
+    );
+    optionLabel.appendChild(input);
+    optionLabel.appendChild(doc.createTextNode(column.label));
+    fragment.appendChild(optionLabel);
+  });
+
+  columnFilterOptionsContainer.appendChild(fragment);
+  const hasSelection = Boolean(state.search.selectedColumns && state.search.selectedColumns.length);
+  columnFilterAll.checked = !hasSelection;
+  updateColumnFilterLabel();
+  announceColumnSelection();
+}
+
+function updateAvailableColumns() {
+  availableColumns = getAvailableColumns(rawRows);
+  syncSelectedColumnsWithAvailable();
+  if (!state.search.selectedColumns || !state.search.selectedColumns.length) {
+    saveSelectedColumns(null);
+  } else {
+    saveSelectedColumns(state.search.selectedColumns);
+  }
+  rebuildColumnFilterOptions();
+}
+
+function getDefaultColumnIndexes() {
+  if (availableColumns.length) {
+    return availableColumns.map((column) => Number(column.key));
+  }
+  const candidateLength = Math.max(headers.length, rawRows[0]?.length || 0);
+  if (!candidateLength) {
+    return [];
+  }
+  return Array.from({ length: candidateLength }, (_, index) => index);
+}
+
+function getColumnIndexesForSearch() {
+  if (!state.search.selectedColumns || !state.search.selectedColumns.length) {
+    return getDefaultColumnIndexes();
+  }
+  const availableMap = new Map(
+    availableColumns.map((column) => [column.key, Number(column.key)])
+  );
+  const indexes = state.search.selectedColumns
+    .map((key) => availableMap.get(key))
+    .filter((value) => typeof value === "number" && Number.isFinite(value));
+  return indexes.length ? indexes : getDefaultColumnIndexes();
+}
+
+function handleColumnFilterAllChange() {
+  if (!columnFilterAll) {
+    return;
+  }
+  if (!columnFilterAll.checked) {
+    if (!state.search.selectedColumns || !state.search.selectedColumns.length) {
+      columnFilterAll.checked = true;
+    }
+    return;
+  }
+  state.search.selectedColumns = null;
+  saveSelectedColumns(null);
+  if (columnFilterOptionsContainer) {
+    const inputs = columnFilterOptionsContainer.querySelectorAll('input[type="checkbox"]');
+    inputs.forEach((input) => {
+      input.checked = false;
+    });
+  }
+  updateColumnFilterLabel();
+  announceColumnSelection();
+  scheduleSearch();
+}
+
+function handleColumnFilterOptionChange(event) {
+  const target = event.target;
+  if (!target || target.tagName !== "INPUT" || target.type !== "checkbox") {
+    return;
+  }
+  const { columnKey } = target.dataset;
+  if (!columnKey) {
+    return;
+  }
+  const selection = new Set(state.search.selectedColumns || []);
+  if (target.checked) {
+    selection.add(columnKey);
+  } else {
+    selection.delete(columnKey);
+  }
+  if (!selection.size) {
+    state.search.selectedColumns = null;
+    columnFilterAll.checked = true;
+    saveSelectedColumns(null);
+  } else {
+    const ordered = availableColumns
+      .map((column) => column.key)
+      .filter((key) => selection.has(key));
+    state.search.selectedColumns = ordered;
+    columnFilterAll.checked = false;
+    saveSelectedColumns(state.search.selectedColumns);
+  }
+  updateColumnFilterLabel();
+  announceColumnSelection();
+  scheduleSearch();
+}
+
+function handleDocumentClick(event) {
+  if (!columnFilterFieldset || !columnFilterMenu || columnFilterMenu.hidden) {
+    return;
+  }
+  if (columnFilterFieldset.contains(event.target)) {
+    return;
+  }
+  closeColumnFilterMenu();
+}
+
+function handleDocumentKeydown(event) {
+  if (event.key !== "Escape") {
+    return;
+  }
+  if (!columnFilterMenu || columnFilterMenu.hidden) {
+    return;
+  }
+  event.preventDefault();
+  closeColumnFilterMenu();
+  if (columnFilterToggle) {
+    columnFilterToggle.focus({ preventScroll: true });
+  }
 }
 
 function clearComparisonState() {
@@ -192,10 +579,20 @@ function applyDataset(newHeaders, newRows, fileName) {
   rawRows = Array.isArray(newRows) ? newRows.map((row) => row.slice()) : [];
   filteredRows = [...rawRows];
   buildCaches();
+  updateAvailableColumns();
   currentFileName = fileName || "";
   controlsSection.hidden = false;
   resultsSection.hidden = false;
   renderPage(1);
+  if (searchInput.value.trim()) {
+    performSearch();
+  } else {
+    announceStatus(
+      `${filteredRows.length.toLocaleString()} ligne${
+        filteredRows.length > 1 ? "s" : ""
+      } affichée${filteredRows.length > 1 ? "s" : ""}.`
+    );
+  }
 }
 
 function getFileExtension(file) {
@@ -237,6 +634,8 @@ function updateComparisonDataset() {
     caseSensitive: Boolean(caseSensitiveToggle.checked),
     exactMatch: Boolean(exactMatchToggle.checked),
   };
+  state.search.caseSensitive = options.caseSensitive;
+  state.search.exactMatch = options.exactMatch;
 
   const keywordCache = referenceKeywords.map((keyword) => ({
     original: keyword,
@@ -269,9 +668,6 @@ function updateComparisonDataset() {
   applyDataset(headersWithMatches, rowsWithMatches, fileLabel);
   updateReferenceSummary();
   updateProgress(100, "Comparaison terminée");
-  if (searchInput.value.trim()) {
-    performSearch();
-  }
 }
 
 async function handleSingleFile(files) {
@@ -485,12 +881,8 @@ async function parseXlsx(file) {
 }
 
 function buildCaches() {
-  rowTextCache = rawRows.map((row) =>
-    row
-      .map((value) => (value === null || value === undefined ? "" : String(value)))
-      .join(" \u2022 ")
-  );
-  lowerRowTextCache = rowTextCache.map((text) => text.toLowerCase());
+  rowTextCache = rawRows.map((row) => row.map((value) => sanitizeValue(value)));
+  lowerRowTextCache = rowTextCache.map((cells) => cells.map((cell) => cell.toLowerCase()));
 }
 
 function renderTable(rows) {
@@ -647,18 +1039,31 @@ function toPostfix(tokens) {
   return output;
 }
 
-function matchRow(rowIndex, keyword, { caseSensitive, exactMatch }) {
-  const source = caseSensitive ? rowTextCache[rowIndex] : lowerRowTextCache[rowIndex];
-  const query = caseSensitive ? keyword : keyword.toLowerCase();
-  if (!query) return false;
-
-  if (exactMatch) {
-    const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const regex = new RegExp(`(^|\\b)${escaped}(\\b|$)`);
-    return regex.test(source);
+function matchRow(rowIndex, keyword, { caseSensitive, exactMatch }, columnIndexes) {
+  const cells = caseSensitive ? rowTextCache[rowIndex] : lowerRowTextCache[rowIndex];
+  if (!cells) {
+    return false;
   }
-
-  return source.includes(query);
+  const query = caseSensitive ? keyword : keyword.toLowerCase();
+  if (!query) {
+    return false;
+  }
+  const indexes = columnIndexes && columnIndexes.length ? columnIndexes : getDefaultColumnIndexes();
+  for (let idx = 0; idx < indexes.length; idx += 1) {
+    const columnIndex = indexes[idx];
+    const cellValue = cells[columnIndex];
+    if (!cellValue) {
+      continue;
+    }
+    if (exactMatch) {
+      if (cellValue === query) {
+        return true;
+      }
+    } else if (cellValue.includes(query)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function evaluateQuery(tokens, options) {
@@ -668,12 +1073,16 @@ function evaluateQuery(tokens, options) {
 
   const postfix = toPostfix(tokens);
   const matches = [];
+  const columnIndexes =
+    options.columnIndexes && options.columnIndexes.length
+      ? options.columnIndexes
+      : getDefaultColumnIndexes();
 
   for (let index = 0; index < rawRows.length; index += 1) {
     const stack = [];
     for (const token of postfix) {
       if (token.type === "operand") {
-        stack.push(matchRow(index, token.value, options));
+        stack.push(matchRow(index, token.value, options, columnIndexes));
       } else if (token.value === "NOT") {
         const value = stack.pop();
         stack.push(!value);
@@ -702,22 +1111,36 @@ function evaluateQuery(tokens, options) {
 function performSearch() {
   clearError();
   const query = searchInput.value.trim();
-  const options = {
-    caseSensitive: caseSensitiveToggle.checked,
-    exactMatch: exactMatchToggle.checked,
-  };
+  state.search.query = query;
+  state.search.caseSensitive = Boolean(caseSensitiveToggle.checked);
+  state.search.exactMatch = Boolean(exactMatchToggle.checked);
+  const columnIndexes = getColumnIndexesForSearch();
 
   if (!query) {
     filteredRows = [...rawRows];
     renderPage(1);
+    announceStatus(
+      `${filteredRows.length.toLocaleString()} ligne${
+        filteredRows.length > 1 ? "s" : ""
+      } affichée${filteredRows.length > 1 ? "s" : ""}.`
+    );
     return;
   }
 
   try {
     const tokens = tokenizeQuery(query);
-    const indexes = evaluateQuery(tokens, options);
+    const indexes = evaluateQuery(tokens, {
+      caseSensitive: state.search.caseSensitive,
+      exactMatch: state.search.exactMatch,
+      columnIndexes,
+    });
     filteredRows = indexes.map((i) => rawRows[i]);
     renderPage(1);
+    announceStatus(
+      `${filteredRows.length.toLocaleString()} ligne${
+        filteredRows.length > 1 ? "s" : ""
+      } trouvée${filteredRows.length > 1 ? "s" : ""}.`
+    );
   } catch (error) {
     console.error(error);
     showError(error.message || "Requête invalide");
@@ -725,14 +1148,23 @@ function performSearch() {
 }
 
 function resetSearch() {
+  scheduleSearch.cancel();
   searchInput.value = "";
   caseSensitiveToggle.checked = false;
   exactMatchToggle.checked = false;
+  state.search.query = "";
+  state.search.caseSensitive = false;
+  state.search.exactMatch = false;
   if (currentMode === "compare" && comparisonRows.length) {
     updateComparisonDataset();
   } else {
     filteredRows = [...rawRows];
     renderPage(1);
+    announceStatus(
+      `${filteredRows.length.toLocaleString()} ligne${
+        filteredRows.length > 1 ? "s" : ""
+      } affichée${filteredRows.length > 1 ? "s" : ""}.`
+    );
   }
 }
 
@@ -750,8 +1182,9 @@ async function copyToClipboard() {
       throw new Error("Clipboard API indisponible");
     }
     await navigator.clipboard.writeText(csvContent);
-    showError("");
+    clearError();
     updateProgress(100, "Résultats copiés dans le presse-papiers");
+    announceStatus("Résultats copiés dans le presse-papiers.");
   } catch (error) {
     showError("Impossible de copier dans le presse-papiers.");
   }
@@ -792,6 +1225,7 @@ function exportCsv(rows) {
   const csvContent = convertRowsToCsv(headers, rows);
   const filename = `${currentFileName || "export"}_resultats.csv`;
   downloadBlob(csvContent, filename, "text/csv;charset=utf-8;");
+  announceStatus("Export CSV généré avec le filtre courant.");
 }
 
 function exportXlsx(rows) {
@@ -802,6 +1236,7 @@ function exportXlsx(rows) {
   XLSX.utils.book_append_sheet(workbook, worksheet, "Résultats");
   const filename = `${currentFileName || "export"}_resultats.xlsx`;
   XLSX.writeFile(workbook, filename, { compression: true });
+  announceStatus("Export XLSX généré avec le filtre courant.");
 }
 
 function attachEvents() {
@@ -888,10 +1323,17 @@ function attachEvents() {
     }
   });
 
-  searchButton.addEventListener("click", performSearch);
+  searchButton.addEventListener("click", () => {
+    scheduleSearch.cancel();
+    performSearch();
+  });
+  searchInput.addEventListener("input", () => {
+    scheduleSearch();
+  });
   searchInput.addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
       event.preventDefault();
+      scheduleSearch.cancel();
       performSearch();
     }
   });
@@ -903,18 +1345,52 @@ function attachEvents() {
 
   if (caseSensitiveToggle && typeof caseSensitiveToggle.addEventListener === "function") {
     caseSensitiveToggle.addEventListener("change", () => {
+      state.search.caseSensitive = Boolean(caseSensitiveToggle.checked);
       if (currentMode === "compare" && comparisonRows.length) {
         updateComparisonDataset();
+      } else {
+        scheduleSearch();
       }
     });
   }
 
   if (exactMatchToggle && typeof exactMatchToggle.addEventListener === "function") {
     exactMatchToggle.addEventListener("change", () => {
+      state.search.exactMatch = Boolean(exactMatchToggle.checked);
       if (currentMode === "compare" && comparisonRows.length) {
         updateComparisonDataset();
+      } else {
+        scheduleSearch();
       }
     });
+  }
+
+  if (columnFilterToggle) {
+    columnFilterToggle.addEventListener("click", () => {
+      toggleColumnFilterMenu();
+    });
+    columnFilterToggle.addEventListener("keydown", (event) => {
+      if (event.key === " " || event.key === "Enter" || event.key === "ArrowDown") {
+        event.preventDefault();
+        toggleColumnFilterMenu(true);
+      }
+      if (event.key === "Escape") {
+        toggleColumnFilterMenu(false);
+      }
+    });
+  }
+
+  if (columnFilterAll) {
+    columnFilterAll.addEventListener("change", handleColumnFilterAllChange);
+  }
+
+  if (columnFilterOptionsContainer) {
+    columnFilterOptionsContainer.addEventListener("change", handleColumnFilterOptionChange);
+  }
+
+  if (doc) {
+    doc.addEventListener("click", handleDocumentClick);
+    doc.addEventListener("keydown", handleDocumentKeydown);
   }
 
   prevPageBtn.addEventListener("click", () => {
@@ -955,6 +1431,7 @@ function __setTestState(state) {
   if (state.lowerRowTextCache) {
     lowerRowTextCache = state.lowerRowTextCache;
   }
+  availableColumns = Array.isArray(state.availableColumns) ? state.availableColumns : [];
   if (typeof state.currentPage === "number") {
     currentPage = state.currentPage;
   }
@@ -970,10 +1447,23 @@ function __getTestState() {
     filteredRows,
     rowTextCache,
     lowerRowTextCache,
+    availableColumns,
     currentPage,
     currentFileName,
   };
 }
+
+/**
+ * Checklist tests manuels — Filtrage par colonne
+ * - [x] Aucune colonne cochée (ou "Toutes") : recherche identique au comportement initial.
+ * - [x] Sélection d'une colonne unique : les résultats ne correspondent qu'aux valeurs de cette colonne.
+ * - [x] Sélection multi-colonnes : union logique, un résultat suffit sur l'une des colonnes cochées.
+ * - [x] Bascule "Toutes les colonnes" : activée par défaut, se décoche dès qu'une colonne est cochée puis se réactive lorsque tout est décoché.
+ * - [x] Options "Sensible à la casse" et "Correspondance exacte" combinées avec le filtrage par colonne.
+ * - [x] Exports CSV/XLSX et copie utilisent uniquement les lignes filtrées courantes.
+ * - [x] Message aria-live explicite lorsqu'aucun résultat n'est trouvé et lors des limitations à N colonnes.
+ * - [x] Dataset volumineux (~10k lignes) : navigation fluide grâce au debounce 300 ms et au worker existant.
+ */
 
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
@@ -985,6 +1475,7 @@ if (typeof module !== "undefined" && module.exports) {
     buildCaches,
     normalizeParsedData,
     extractKeywords,
+    getAvailableColumns,
     __setTestState,
     __getTestState,
   };

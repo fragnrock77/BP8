@@ -77,6 +77,44 @@
             Mots-clés (séparés par des virgules, espaces ou opérateurs AND/OR/NOT)
             <input id="search-input" type="text" placeholder="ex: client, premium AND NOT résilié" />
           </label>
+          <fieldset
+            id="column-filter"
+            class="column-filter"
+            role="group"
+            aria-label="Filtrage par colonne"
+            disabled
+          >
+            <legend>Rechercher dans</legend>
+            <button
+              type="button"
+              id="column-filter-toggle"
+              class="button button--ghost column-filter__toggle"
+              aria-haspopup="true"
+              aria-expanded="false"
+              aria-controls="column-filter-menu"
+            >
+              <span id="column-filter-label">Colonnes : Toutes</span>
+            </button>
+            <div
+              id="column-filter-menu"
+              class="column-filter__menu"
+              role="listbox"
+              aria-multiselectable="true"
+              hidden
+            >
+              <label class="checkbox column-filter__option">
+                <input
+                  type="checkbox"
+                  id="column-filter-all"
+                  data-column-key="__all"
+                  checked
+                />
+                Toutes les colonnes
+              </label>
+              <div id="column-filter-options" class="column-filter__options"></div>
+            </div>
+            <p id="column-filter-live" class="visually-hidden" aria-live="polite"></p>
+          </fieldset>
           <label class="checkbox">
             <input id="case-sensitive" type="checkbox" /> Sensible à la casse
           </label>
@@ -88,6 +126,7 @@
             <button id="reset-button" class="button button--ghost">Réinitialiser</button>
           </div>
         </div>
+        <p id="live-feedback" class="visually-hidden" aria-live="polite"></p>
       </section>
 
       <section class="results" id="results" hidden>
