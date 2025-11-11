@@ -8,7 +8,12 @@ const {
   buildCaches,
   normalizeParsedData,
   extractKeywords,
+ codex/audit-application-and-add-column-filtering-09or3v
+  getColumnsFor,
+  getSingleFileColumns,
+
   getAvailableColumns,
+ main
   __setTestState,
   __getTestState,
 } = require('../app.js');
@@ -32,12 +37,15 @@ const SAMPLE_ROWS = [
 ];
 
 function resetStateForTests() {
+  const columns = getSingleFileColumns(['Name', 'Plan', 'Status'], SAMPLE_ROWS);
   __setTestState({
     headers: ['Name', 'Plan', 'Status'],
     rawRows: SAMPLE_ROWS,
     filteredRows: SAMPLE_ROWS.slice(),
     rowTextCache: [],
     lowerRowTextCache: [],
+    tableColumns: columns,
+    matchesColumnIndex: -1,
     currentPage: 1,
     currentFileName: 'sample',
   });
@@ -165,6 +173,23 @@ test('extractKeywords returns unique trimmed entries', () => {
 
 resetStateForTests();
 
+ codex/audit-application-and-add-column-filtering-09or3v
+test('getColumnsFor prefixes labels for comparison datasets', () => {
+  const columns = getColumnsFor('ref', [['A', 'B', 'C']], []);
+  assert.deepStrictEqual(columns.map((col) => col.label), [
+    'ref.Colonne 1',
+    'ref.Colonne 2',
+    'ref.Colonne 3',
+  ]);
+});
+
+test('getSingleFileColumns keeps display labels without prefixes', () => {
+  const columns = getSingleFileColumns(['Nom', 'Âge'], [
+    ['Alice', '30'],
+    ['Bob', '28'],
+  ]);
+  assert.deepStrictEqual(columns.map((col) => col.label), ['Nom', 'Âge']);
+
 test('getAvailableColumns falls back to generated labels', () => {
   __setTestState({
     headers: [],
@@ -181,6 +206,7 @@ test('getAvailableColumns falls back to generated labels', () => {
     'Colonne 2',
     'Colonne 3',
   ]);
+ main
 });
 
 resetStateForTests();

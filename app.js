@@ -1,4 +1,12 @@
 /**
+ codex/audit-application-and-add-column-filtering-09or3v
+ * Rapport de modifications — Comparaison avec cases d'en-tête
+ * - Bugs corrigés : export limité aux résultats filtrés, réinitialisation sûre quand aucune colonne n'est cochée, nettoyage des états comparaison/ref.
+ * - Décisions techniques : modèle de colonnes unifié (`tableColumns` + clés ref./cmp.), colonne "Mots-clés trouvés" calculée depuis les opérandes et surbrillance <mark>.
+ * - Impact accessibilité : fieldset résumé, cases à cocher labellisées dans les th, aria-live pour limites de recherche et erreurs.
+ * - Performance : caches de cellules restreints aux colonnes recherchables, debounce 300 ms conservé, worker inchangé.
+ * - Tests : checklist manuelle actualisée (comparaison, export, 10k lignes) + suite automatisée mise à jour (colonnes ref./cmp.).
+
  * Rapport de modifications — Filtrage par colonne
  * - Bugs corrigés : cache de recherche concaténé (faux positifs inter-colonnes) remplacé par un cache par cellule et annonces d'erreurs via aria-live pour éviter les silences en cas d'échec.
  * - Changements UI : ajout d'un filtre multi-colonnes persistant avec bouton accessible et menu déroulant.
@@ -6,6 +14,7 @@
  * - Accessibilité : fieldset/legend, aria-live dédié, focus visible dans le menu, annonces vocales des limites de recherche.
  * - Performance : debounce 300 ms sur recherche/filtre, réduction des colonnes inspectées, worker conservé.
  * - Tests manuels : checklist en fin de fichier (cas "Toutes", une colonne, multi, export, 10k lignes, options casse/exacte).
+ main
  */
 
 const doc = typeof document !== "undefined" ? document : null;
@@ -45,12 +54,15 @@ const copyButton = doc ? doc.getElementById("copy-button") : null;
 const exportCsvButton = doc ? doc.getElementById("export-csv-button") : null;
 const exportXlsxButton = doc ? doc.getElementById("export-xlsx-button") : null;
 const columnFilterFieldset = doc ? doc.getElementById("column-filter") : null;
+ codex/audit-application-and-add-column-filtering-09or3v
+
 const columnFilterToggle = doc ? doc.getElementById("column-filter-toggle") : null;
 const columnFilterMenu = doc ? doc.getElementById("column-filter-menu") : null;
 const columnFilterOptionsContainer = doc
   ? doc.getElementById("column-filter-options")
   : null;
 const columnFilterAll = doc ? doc.getElementById("column-filter-all") : null;
+ main
 const columnFilterLabel = doc
   ? doc.getElementById("column-filter-label")
   : { textContent: "" };
@@ -62,6 +74,12 @@ const SEARCH_DEBOUNCE = 300;
 const MAX_FILE_SIZE = 200 * 1024 * 1024; // 200MB
 
 const STORAGE_KEYS = {
+ codex/audit-application-and-add-column-filtering-09or3v
+  selectedRef: "bp8.search.selectedColumns.ref",
+  selectedCmp: "bp8.search.selectedColumns.cmp",
+};
+
+
   selectedColumns: "bp8.search.selectedColumns",
 };
 
@@ -100,12 +118,17 @@ function saveSelectedColumns(columns) {
   }
 }
 
+ main
 const state = {
   search: {
     query: "",
     caseSensitive: false,
     exactMatch: false,
+ codex/audit-application-and-add-column-filtering-09or3v
+    selectedKeys: null,
+
     selectedColumns: loadSelectedColumns(),
+ main
   },
 };
 
@@ -136,11 +159,20 @@ let rawRows = [];
 let filteredRows = [];
 let rowTextCache = [];
 let lowerRowTextCache = [];
+ codex/audit-application-and-add-column-filtering-09or3v
+let tableColumns = [];
+let columnKeyToIndex = new Map();
+let filteredRowHighlights = [];
+let matchesColumnIndex = -1;
+
 let availableColumns = [];
+ main
 let currentPage = 1;
 let currentFileName = "";
 let currentMode = "single";
 let referenceKeywords = [];
+let referenceHeaders = [];
+let referenceRows = [];
 let comparisonHeaders = [];
 let comparisonRows = [];
 let referenceFileName = "";
@@ -152,7 +184,15 @@ function resetDataset() {
   filteredRows = [];
   rowTextCache = [];
   lowerRowTextCache = [];
+ codex/audit-application-and-add-column-filtering-09or3v
+  tableColumns = [];
+  columnKeyToIndex = new Map();
+  filteredRowHighlights = [];
+  matchesColumnIndex = -1;
+  state.search.selectedKeys = null;
+
   availableColumns = [];
+ main
   currentPage = 1;
   currentFileName = "";
   updateProgress(0, "");
@@ -164,7 +204,13 @@ function resetDataset() {
     dataTable.innerHTML = "";
   }
   resultStats.textContent = "";
+ codex/audit-application-and-add-column-filtering-09or3v
+  setColumnFilterInteractivity(true);
+  updateSearchSummary();
+  announceColumnSelection();
+
   rebuildColumnFilterOptions();
+ main
 }
 
 function announceStatus(message) {
@@ -214,6 +260,48 @@ function sanitizeColumnLabel(header, index) {
   return String(header);
 }
 
+ codex/audit-application-and-add-column-filtering-09or3v
+function buildColumns(headers, rows, { prefix, origin }) {
+  const firstRow = Array.isArray(rows) && rows.length ? rows[0] : [];
+  const columnCount = Math.max(headers.length, firstRow.length);
+  if (!columnCount) {
+    return [];
+  }
+  const columns = [];
+  const seenLabels = new Map();
+  for (let index = 0; index < columnCount; index += 1) {
+    const baseLabel = sanitizeColumnLabel(headers[index], index);
+    const prefixedLabel = prefix ? `${prefix}.${baseLabel}` : baseLabel;
+    const occurrences = seenLabels.get(prefixedLabel) || 0;
+    seenLabels.set(prefixedLabel, occurrences + 1);
+    const label = occurrences === 0 ? prefixedLabel : `${prefixedLabel} (${occurrences + 1})`;
+    columns.push({ key: label, label, origin, index });
+  }
+  return columns;
+}
+
+function getColumnsFor(fileKind, rows, headers = []) {
+  const prefix = fileKind === "cmp" ? "cmp" : "ref";
+  const sanitizedHeaders = Array.isArray(headers)
+    ? headers.map((header, index) => sanitizeColumnLabel(header, index))
+    : [];
+  return buildColumns(sanitizedHeaders, rows, { prefix, origin: fileKind });
+}
+
+function getSingleFileColumns(headers, rows) {
+  const sanitizedHeaders = Array.isArray(headers)
+    ? headers.map((header, index) => sanitizeColumnLabel(header, index))
+    : [];
+  return buildColumns(sanitizedHeaders, rows, { prefix: "col", origin: "single" }).map(
+    (column) => ({
+      ...column,
+      label: sanitizedHeaders[column.index] || sanitizeColumnLabel("", column.index),
+    })
+  );
+}
+
+
+ main
 function getAvailableColumns(rows = rawRows) {
   const firstRow = Array.isArray(rows) && rows.length ? rows[0] : [];
   const totalColumns = Math.max(headers.length, firstRow.length);
@@ -226,6 +314,159 @@ function getAvailableColumns(rows = rawRows) {
   }
   return detected;
 }
+
+ codex/audit-application-and-add-column-filtering-09or3v
+function loadSelectedKeysForComparison() {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  try {
+    const storedRef = window.localStorage.getItem(STORAGE_KEYS.selectedRef);
+    const storedCmp = window.localStorage.getItem(STORAGE_KEYS.selectedCmp);
+    const parsed = [];
+    if (storedRef) {
+      const values = JSON.parse(storedRef);
+      if (Array.isArray(values)) {
+        parsed.push(...values.map((value) => String(value)));
+      }
+    }
+    if (storedCmp) {
+      const values = JSON.parse(storedCmp);
+      if (Array.isArray(values)) {
+        parsed.push(...values.map((value) => String(value)));
+      }
+    }
+    return parsed.length ? new Set(parsed) : null;
+  } catch (error) {
+    console.warn("Impossible de charger les colonnes persistées", error);
+    return null;
+  }
+}
+
+function saveSelectedKeysForComparison(selection) {
+  if (typeof window === "undefined") {
+    return;
+  }
+  try {
+    if (!selection || !selection.size) {
+      window.localStorage.removeItem(STORAGE_KEYS.selectedRef);
+      window.localStorage.removeItem(STORAGE_KEYS.selectedCmp);
+      return;
+    }
+    const refKeys = [];
+    const cmpKeys = [];
+    selection.forEach((key) => {
+      if (typeof key !== "string") {
+        return;
+      }
+      if (key.startsWith("ref.")) {
+        refKeys.push(key);
+      } else if (key.startsWith("cmp.")) {
+        cmpKeys.push(key);
+      }
+    });
+    if (refKeys.length) {
+      window.localStorage.setItem(STORAGE_KEYS.selectedRef, JSON.stringify(refKeys));
+    } else {
+      window.localStorage.removeItem(STORAGE_KEYS.selectedRef);
+    }
+    if (cmpKeys.length) {
+      window.localStorage.setItem(STORAGE_KEYS.selectedCmp, JSON.stringify(cmpKeys));
+    } else {
+      window.localStorage.removeItem(STORAGE_KEYS.selectedCmp);
+    }
+  } catch (error) {
+    console.warn("Impossible de persister les colonnes sélectionnées", error);
+  }
+}
+
+function updateSearchSummary() {
+  if (!columnFilterLabel) {
+    return;
+  }
+  if (!tableColumns.length) {
+    columnFilterLabel.textContent = "Colonnes : Toutes";
+    return;
+  }
+  if (!state.search.selectedKeys || !state.search.selectedKeys.size) {
+    columnFilterLabel.textContent = "Colonnes : Toutes";
+    return;
+  }
+  const labels = tableColumns
+    .filter((column) => state.search.selectedKeys.has(column.key))
+    .map((column) => column.label);
+  if (!labels.length) {
+    columnFilterLabel.textContent = "Colonnes : Toutes";
+    return;
+  }
+  const preview = labels.slice(0, 3).join(", ");
+  const suffix = labels.length > 3 ? ` +${labels.length - 3}` : "";
+  columnFilterLabel.textContent = `Colonnes : ${preview}${suffix}`;
+}
+
+function announceColumnSelection(message) {
+  if (!columnFilterLive) {
+    return;
+  }
+  if (message) {
+    columnFilterLive.textContent = message;
+    return;
+  }
+  if (!tableColumns.length || !state.search.selectedKeys || !state.search.selectedKeys.size) {
+    columnFilterLive.textContent = "Recherche sur toutes les colonnes.";
+    return;
+  }
+  const count = state.search.selectedKeys.size;
+  columnFilterLive.textContent = `Recherche limitée à ${count} colonne${count > 1 ? "s" : ""}.`;
+}
+
+function setColumnFilterInteractivity(disabled) {
+  if (!columnFilterFieldset) {
+    return;
+  }
+  columnFilterFieldset.disabled = Boolean(disabled);
+  if (disabled) {
+    columnFilterFieldset.setAttribute("aria-disabled", "true");
+  } else {
+    columnFilterFieldset.removeAttribute("aria-disabled");
+  }
+}
+
+function syncSelectedKeysWithColumns({ loadStored = false } = {}) {
+  if (!tableColumns.length) {
+    state.search.selectedKeys = null;
+    setColumnFilterInteractivity(true);
+    return;
+  }
+
+  const availableKeys = new Set(tableColumns.map((column) => column.key));
+  let selection = state.search.selectedKeys ? new Set(state.search.selectedKeys) : null;
+
+  if (loadStored && currentMode === "compare") {
+    const stored = loadSelectedKeysForComparison();
+    if (stored && stored.size) {
+      selection = stored;
+    }
+  }
+
+  if (selection) {
+    const filtered = Array.from(selection).filter((key) => availableKeys.has(key));
+    selection = filtered.length ? new Set(filtered) : null;
+  }
+
+  if (selection && selection.size === availableKeys.size) {
+    selection = null;
+  }
+
+  state.search.selectedKeys = selection;
+  setColumnFilterInteractivity(false);
+  updateSearchSummary();
+  announceColumnSelection();
+}
+
+function getDefaultColumnIndexes() {
+  if (tableColumns.length) {
+    return tableColumns.map((_, index) => index);
 
 function syncSelectedColumnsWithAvailable() {
   if (!state.search.selectedColumns || !state.search.selectedColumns.length) {
@@ -390,6 +631,7 @@ function updateAvailableColumns() {
 function getDefaultColumnIndexes() {
   if (availableColumns.length) {
     return availableColumns.map((column) => Number(column.key));
+ main
   }
   const candidateLength = Math.max(headers.length, rawRows[0]?.length || 0);
   if (!candidateLength) {
@@ -399,6 +641,103 @@ function getDefaultColumnIndexes() {
 }
 
 function getColumnIndexesForSearch() {
+ codex/audit-application-and-add-column-filtering-09or3v
+  if (!state.search.selectedKeys || !state.search.selectedKeys.size) {
+    return getDefaultColumnIndexes();
+  }
+  const indexes = [];
+  state.search.selectedKeys.forEach((key) => {
+    const index = columnKeyToIndex.get(key);
+    if (typeof index === "number") {
+      indexes.push(index);
+    }
+  });
+  return indexes.length ? indexes : getDefaultColumnIndexes();
+}
+
+function setAllColumnsSelected(selectAll) {
+  if (!tableColumns.length) {
+    state.search.selectedKeys = null;
+    updateSearchSummary();
+    announceColumnSelection();
+    return;
+  }
+  state.search.selectedKeys = null;
+  updateSearchSummary();
+  announceColumnSelection(
+    selectAll
+      ? "Recherche sur toutes les colonnes."
+      : "Aucune colonne sélectionnée, réinitialisation sur Toutes les colonnes."
+  );
+  if (currentMode === "compare") {
+    saveSelectedKeysForComparison(state.search.selectedKeys);
+  }
+}
+
+function handleColumnToggle(input, checked) {
+  if (!input) {
+    return;
+  }
+  const key = input.dataset.columnKey;
+  if (!key) {
+    return;
+  }
+  if (!tableColumns.length) {
+    return;
+  }
+  let selection = state.search.selectedKeys;
+  if (!selection) {
+    selection = new Set(tableColumns.map((column) => column.key));
+  } else {
+    selection = new Set(selection);
+  }
+
+  if (checked) {
+    selection.add(key);
+  } else {
+    selection.delete(key);
+  }
+
+  if (!selection.size) {
+    state.search.selectedKeys = null;
+    updateSearchSummary();
+    announceColumnSelection("Aucune colonne sélectionnée, réinitialisation sur Toutes les colonnes.");
+    input.checked = true;
+  } else if (selection.size === tableColumns.length) {
+    state.search.selectedKeys = null;
+    updateSearchSummary();
+    announceColumnSelection();
+  } else {
+    state.search.selectedKeys = selection;
+    updateSearchSummary();
+    announceColumnSelection();
+  }
+
+  if (currentMode === "compare") {
+    saveSelectedKeysForComparison(state.search.selectedKeys);
+  }
+  scheduleSearch();
+}
+
+function handleHeaderToggleChange(event) {
+  const target = event.target;
+  if (!target || target.type !== "checkbox") {
+    return;
+  }
+  if (target.dataset.toggleType === "all") {
+    if (!target.checked) {
+      // Prevent leaving everything unchecked.
+      setAllColumnsSelected(false);
+      // Immediately reset checkbox to checked state for UI consistency.
+      target.checked = true;
+    } else {
+      setAllColumnsSelected(true);
+    }
+    scheduleSearch();
+    return;
+  }
+  handleColumnToggle(target, target.checked);
+
   if (!state.search.selectedColumns || !state.search.selectedColumns.length) {
     return getDefaultColumnIndexes();
   }
@@ -488,10 +827,13 @@ function handleDocumentKeydown(event) {
   if (columnFilterToggle) {
     columnFilterToggle.focus({ preventScroll: true });
   }
+ main
 }
 
 function clearComparisonState() {
   referenceKeywords = [];
+  referenceHeaders = [];
+  referenceRows = [];
   comparisonHeaders = [];
   comparisonRows = [];
   referenceFileName = "";
@@ -574,12 +916,50 @@ function extractKeywords(rows) {
   return Array.from(keywords);
 }
 
-function applyDataset(newHeaders, newRows, fileName) {
-  headers = Array.isArray(newHeaders) ? newHeaders.slice() : [];
-  rawRows = Array.isArray(newRows) ? newRows.map((row) => row.slice()) : [];
-  filteredRows = [...rawRows];
+function applyDataset({ columns, rows, fileName, includeMatchesColumn = false, loadStored = false }) {
+  tableColumns = Array.isArray(columns)
+    ? columns.map((column, index) => ({
+        key: column.key || String(index),
+        label: column.label || sanitizeColumnLabel("", index),
+        origin: column.origin || "single",
+        index,
+      }))
+    : [];
+  columnKeyToIndex = new Map(tableColumns.map((column, index) => [column.key, index]));
+
+  headers = tableColumns.map((column) => column.label);
+  if (includeMatchesColumn) {
+    matchesColumnIndex = headers.length;
+    headers.push("Mots-clés trouvés");
+  } else {
+    matchesColumnIndex = -1;
+  }
+
+  const searchColumnCount = tableColumns.length;
+  rawRows = Array.isArray(rows)
+    ? rows.map((row) => {
+        const normalized = Array.from({ length: searchColumnCount }, (_, index) =>
+          sanitizeValue(row?.[index])
+        );
+        if (includeMatchesColumn) {
+          normalized.push("");
+        }
+        return normalized;
+      })
+    : [];
+
+  filteredRows = rawRows.map((row) => row.slice());
+  filteredRowHighlights = filteredRows.map(() => new Array(headers.length).fill(null));
   buildCaches();
+ codex/audit-application-and-add-column-filtering-09or3v
+  syncSelectedKeysWithColumns({ loadStored });
+  if (currentMode === "compare") {
+    saveSelectedKeysForComparison(state.search.selectedKeys);
+  }
+
+
   updateAvailableColumns();
+ main
   currentFileName = fileName || "";
   controlsSection.hidden = false;
   resultsSection.hidden = false;
@@ -626,9 +1006,14 @@ function updateReferenceSummary() {
 }
 
 function updateComparisonDataset() {
-  if (!comparisonRows.length) {
+  if (!comparisonHeaders.length && !comparisonRows.length) {
     return;
   }
+
+ codex/audit-application-and-add-column-filtering-09or3v
+  const refColumns = getColumnsFor("ref", referenceRows, referenceHeaders);
+  const cmpColumns = getColumnsFor("cmp", comparisonRows, comparisonHeaders);
+  const columns = [...refColumns, ...cmpColumns];
 
   const options = {
     caseSensitive: Boolean(caseSensitiveToggle.checked),
@@ -636,36 +1021,41 @@ function updateComparisonDataset() {
   };
   state.search.caseSensitive = options.caseSensitive;
   state.search.exactMatch = options.exactMatch;
+ main
 
-  const keywordCache = referenceKeywords.map((keyword) => ({
-    original: keyword,
-    normalized: options.caseSensitive ? keyword : keyword.toLowerCase(),
-  }));
+  if (!columns.length) {
+    resetDataset();
+    updateReferenceSummary();
+    return;
+  }
 
-  const rowsWithMatches = comparisonRows.map((row) => {
-    const haystack = options.caseSensitive
-      ? row
-      : row.map((value) => value.toLowerCase());
-    const matches = [];
-    keywordCache.forEach((keyword) => {
-      if (!keyword.normalized) {
-        return;
-      }
-      const found = haystack.some((cell) =>
-        options.exactMatch ? cell === keyword.normalized : cell.includes(keyword.normalized)
-      );
-      if (found) {
-        matches.push(keyword.original);
-      }
+  const totalRows = Math.max(referenceRows.length, comparisonRows.length, 0);
+  const combinedRows = Array.from({ length: totalRows }, (_, rowIndex) => {
+    const refRow = referenceRows[rowIndex] || [];
+    const cmpRow = comparisonRows[rowIndex] || [];
+    const values = [];
+    refColumns.forEach((column) => {
+      values.push(sanitizeValue(refRow[column.index]));
     });
-    const outputRow = row.slice();
-    outputRow.push(matches.join(", "));
-    return outputRow;
+    cmpColumns.forEach((column) => {
+      values.push(sanitizeValue(cmpRow[column.index]));
+    });
+    return values;
   });
 
-  const headersWithMatches = [...comparisonHeaders, "Mots-clés trouvés"];
-  const fileLabel = comparisonFileName ? `${comparisonFileName}_comparaison` : "comparaison";
-  applyDataset(headersWithMatches, rowsWithMatches, fileLabel);
+  const fileLabel = comparisonFileName
+    ? `${comparisonFileName}_comparaison`
+    : referenceFileName
+    ? `${referenceFileName}_comparaison`
+    : "comparaison";
+
+  applyDataset({
+    columns,
+    rows: combinedRows,
+    fileName: fileLabel,
+    includeMatchesColumn: true,
+    loadStored: true,
+  });
   updateReferenceSummary();
   updateProgress(100, "Comparaison terminée");
 }
@@ -700,7 +1090,14 @@ async function handleSingleFile(files) {
       return;
     }
 
-    applyDataset(parsedHeaders, rows, currentFileName);
+    const columns = getSingleFileColumns(parsedHeaders, rows);
+    applyDataset({
+      columns,
+      rows,
+      fileName: currentFileName,
+      includeMatchesColumn: false,
+      loadStored: false,
+    });
   } catch (error) {
     console.error(error);
     showError(
@@ -735,9 +1132,13 @@ async function handleReferenceFiles(files) {
   try {
     const parsed =
       extension === "csv" ? await parseCsv(file) : await parseXlsx(file);
-    const { rows } = normalizeParsedData(parsed);
+    const { headers: parsedHeaders, rows } = normalizeParsedData(parsed);
+    referenceHeaders = parsedHeaders;
+    referenceRows = rows;
     if (!rows.length) {
       referenceKeywords = [];
+      referenceHeaders = [];
+      referenceRows = [];
       updateReferenceSummary();
       showError("Aucune donnée trouvée dans le fichier de référence.");
       resetDataset();
@@ -747,7 +1148,7 @@ async function handleReferenceFiles(files) {
     referenceKeywords = extractKeywords(rows);
     updateReferenceSummary();
 
-    if (!comparisonRows.length) {
+    if (!comparisonHeaders.length && !comparisonRows.length) {
       resetDataset();
       updateProgress(100, "Fichier de référence chargé");
     } else {
@@ -786,8 +1187,8 @@ async function handleComparisonFiles(files) {
       extension === "csv" ? await parseCsv(file) : await parseXlsx(file);
     const { headers: parsedHeaders, rows } = normalizeParsedData(parsed);
     if (!rows.length) {
+      comparisonHeaders = [];
       comparisonRows = [];
-      comparisonHeaders = parsedHeaders;
       resetDataset();
       showError("Aucune donnée trouvée dans le fichier à comparer.");
       return;
@@ -796,7 +1197,7 @@ async function handleComparisonFiles(files) {
     comparisonHeaders = parsedHeaders;
     comparisonRows = rows;
 
-    if (!referenceKeywords.length) {
+    if (!referenceHeaders.length && !referenceRows.length) {
       resetDataset();
       updateProgress(100, "Fichier à comparer chargé");
     } else {
@@ -822,7 +1223,7 @@ async function handleCompareDrop(files) {
     return;
   }
 
-  if (!referenceKeywords.length) {
+  if (!referenceHeaders.length && !referenceRows.length) {
     await handleReferenceFiles([fileList[0]]);
   } else {
     await handleComparisonFiles([fileList[0]]);
@@ -881,36 +1282,120 @@ async function parseXlsx(file) {
 }
 
 function buildCaches() {
+ codex/audit-application-and-add-column-filtering-09or3v
+  const searchColumnCount = tableColumns.length || Math.max(headers.length, 0);
+  rowTextCache = rawRows.map((row) =>
+    Array.from({ length: searchColumnCount }, (_, index) => sanitizeValue(row?.[index]))
+  );
+
   rowTextCache = rawRows.map((row) => row.map((value) => sanitizeValue(value)));
+ main
   lowerRowTextCache = rowTextCache.map((cells) => cells.map((cell) => cell.toLowerCase()));
 }
 
-function renderTable(rows) {
+function renderTable(rows, { highlights = [] } = {}) {
   if (!dataTable) {
     return;
   }
-  const columnCount = rows.reduce((max, row) => Math.max(max, row.length), headers.length);
-  const effectiveColumnCount = columnCount || headers.length || (rows[0]?.length ?? 0);
+
   const tableHead = doc.createElement("thead");
   const headerRow = doc.createElement("tr");
-  const totalColumns = Math.max(effectiveColumnCount, headers.length);
-  for (let index = 0; index < totalColumns; index += 1) {
-    const th = doc.createElement("th");
-    const header = headers[index];
-    th.textContent = header === undefined || header === null || header === ""
-      ? `Colonne ${index + 1}`
-      : String(header);
-    headerRow.appendChild(th);
+
+  if (tableColumns.length) {
+    const allSelected = !state.search.selectedKeys || !state.search.selectedKeys.size;
+    tableColumns.forEach((column, index) => {
+      const th = doc.createElement("th");
+      th.className = "table__header";
+      const wrapper = doc.createElement("div");
+      wrapper.className = "table__header-inner";
+
+      if (index === 0) {
+        const allLabel = doc.createElement("label");
+        allLabel.className = "col-toggle col-toggle--all";
+        const allInput = doc.createElement("input");
+        allInput.type = "checkbox";
+        allInput.className = "col-toggle__input";
+        allInput.dataset.toggleType = "all";
+        allInput.checked = allSelected;
+        allInput.title = "Tout / Rien";
+        allInput.setAttribute(
+          "aria-label",
+          allSelected
+            ? "Toutes les colonnes sont incluses dans la recherche"
+            : "Réinitialiser la recherche sur toutes les colonnes"
+        );
+        const allText = doc.createElement("span");
+        allText.className = "col-toggle__text";
+        allText.textContent = "Tout / Rien";
+        allLabel.appendChild(allInput);
+        allLabel.appendChild(allText);
+        wrapper.appendChild(allLabel);
+      }
+
+      const labelSpan = doc.createElement("span");
+      labelSpan.className = "table__header-label";
+      labelSpan.textContent = column.label;
+      wrapper.appendChild(labelSpan);
+
+      const toggleLabel = doc.createElement("label");
+      toggleLabel.className = "col-toggle";
+      toggleLabel.title = "Inclure cette colonne dans la recherche";
+      const toggleInput = doc.createElement("input");
+      toggleInput.type = "checkbox";
+      toggleInput.className = "col-toggle__input";
+      toggleInput.dataset.columnKey = column.key;
+      toggleInput.checked = allSelected || (state.search.selectedKeys?.has(column.key) ?? false);
+      toggleInput.setAttribute(
+        "aria-label",
+        `Inclure la colonne ${column.label} dans la recherche`
+      );
+      const toggleText = doc.createElement("span");
+      toggleText.className = "visually-hidden";
+      toggleText.textContent = `Inclure ${column.label} dans la recherche`;
+      toggleLabel.appendChild(toggleInput);
+      toggleLabel.appendChild(toggleText);
+      wrapper.appendChild(toggleLabel);
+
+      th.appendChild(wrapper);
+      headerRow.appendChild(th);
+    });
+
+    if (matchesColumnIndex >= 0) {
+      const th = doc.createElement("th");
+      th.className = "table__header table__header--matches";
+      th.textContent = headers[matchesColumnIndex] || "Mots-clés trouvés";
+      headerRow.appendChild(th);
+    }
+  } else {
+    const totalColumns = headers.length || (rows[0]?.length ?? 0);
+    for (let index = 0; index < totalColumns; index += 1) {
+      const th = doc.createElement("th");
+      const header = headers[index];
+      th.textContent = header === undefined || header === null || header === ""
+        ? `Colonne ${index + 1}`
+        : String(header);
+      headerRow.appendChild(th);
+    }
   }
+
   tableHead.appendChild(headerRow);
 
   const tableBody = doc.createElement("tbody");
-  rows.forEach((row) => {
+  rows.forEach((row, rowIndex) => {
     const tr = doc.createElement("tr");
-    for (let index = 0; index < totalColumns; index += 1) {
+    const rowHighlight = highlights[rowIndex] || [];
+    for (let index = 0; index < headers.length; index += 1) {
       const td = doc.createElement("td");
-      const value = row[index];
-      td.textContent = value === undefined || value === null ? "" : String(value);
+      if (matchesColumnIndex >= 0 && index === matchesColumnIndex) {
+        td.classList.add("matches-cell");
+      }
+      const highlightContent = rowHighlight[index];
+      if (highlightContent) {
+        td.innerHTML = highlightContent;
+      } else {
+        const value = row?.[index];
+        td.textContent = value === undefined || value === null ? "" : String(value);
+      }
       tr.appendChild(td);
     }
     tableBody.appendChild(tr);
@@ -930,7 +1415,7 @@ function renderPage(pageNumber) {
     return;
   }
   if (filteredRows.length === 0) {
-    renderTable([]);
+    renderTable([], { highlights: [] });
     const tbody = dataTable.querySelector("tbody");
     if (tbody) {
       const emptyRow = doc.createElement("tr");
@@ -950,8 +1435,9 @@ function renderPage(pageNumber) {
   currentPage = Math.min(Math.max(pageNumber, 1), totalPages);
   const start = (currentPage - 1) * PAGE_SIZE;
   const pageRows = filteredRows.slice(start, start + PAGE_SIZE);
+  const pageHighlights = filteredRowHighlights.slice(start, start + PAGE_SIZE);
 
-  renderTable(pageRows);
+  renderTable(pageRows, { highlights: pageHighlights });
 
   const totalText = `${filteredRows.length.toLocaleString()} ligne${
     filteredRows.length > 1 ? "s" : ""
@@ -1108,6 +1594,134 @@ function evaluateQuery(tokens, options) {
   return matches;
 }
 
+function computeRowHighlights(rowIndex, tokens, options, columnIndexes) {
+  const highlights = new Array(headers.length).fill(null);
+  if (!tokens.length) {
+    return { summary: "", highlights };
+  }
+
+  const indexes = columnIndexes && columnIndexes.length ? columnIndexes : getDefaultColumnIndexes();
+  const comparisonCells = options.caseSensitive ? rowTextCache[rowIndex] : lowerRowTextCache[rowIndex];
+  const originalCells = rowTextCache[rowIndex] || [];
+  const matches = [];
+  const highlightMap = new Map();
+
+  tokens.forEach((token) => {
+    const value = token === undefined || token === null ? "" : String(token);
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return;
+    }
+    const normalized = options.caseSensitive ? trimmed : trimmed.toLowerCase();
+    const matchedColumns = [];
+
+    indexes.forEach((columnIndex) => {
+      const haystack = comparisonCells?.[columnIndex];
+      if (haystack === undefined || haystack === null) {
+        return;
+      }
+      const matchFound = options.exactMatch ? haystack === normalized : haystack.includes(normalized);
+      if (matchFound) {
+        const columnLabel = tableColumns[columnIndex]?.label || sanitizeColumnLabel("", columnIndex);
+        matchedColumns.push(columnLabel);
+        if (!highlightMap.has(columnIndex)) {
+          highlightMap.set(columnIndex, new Set());
+        }
+        highlightMap.get(columnIndex).add(trimmed);
+      }
+    });
+
+    if (matchedColumns.length) {
+      matches.push({ token: trimmed, columns: matchedColumns });
+    }
+  });
+
+  highlightMap.forEach((tokensSet, columnIndex) => {
+    const cellValue = originalCells[columnIndex] ?? "";
+    highlights[columnIndex] = highlightValue(cellValue, tokensSet, options);
+  });
+
+  const summary = matches
+    .map((entry) => `${entry.token} (${entry.columns.join(", ")})`)
+    .join("; ");
+
+  return { summary, highlights };
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function highlightValue(value, tokensSet, options) {
+  const text = sanitizeValue(value);
+  if (!text) {
+    return "";
+  }
+  const tokens = Array.from(tokensSet || []).filter(Boolean);
+  if (!tokens.length) {
+    return escapeHtml(text);
+  }
+
+  const normalizedText = options.caseSensitive ? text : text.toLowerCase();
+  const ranges = [];
+
+  tokens.forEach((token) => {
+    const normalizedToken = options.caseSensitive ? token : token.toLowerCase();
+    if (!normalizedToken) {
+      return;
+    }
+    if (options.exactMatch) {
+      if (normalizedText === normalizedToken) {
+        ranges.push({ start: 0, end: text.length });
+      }
+      return;
+    }
+    let startIndex = 0;
+    while (startIndex <= normalizedText.length) {
+      const index = normalizedText.indexOf(normalizedToken, startIndex);
+      if (index === -1) {
+        break;
+      }
+      ranges.push({ start: index, end: index + normalizedToken.length });
+      startIndex = index + Math.max(normalizedToken.length, 1);
+    }
+  });
+
+  if (!ranges.length) {
+    return escapeHtml(text);
+  }
+
+  ranges.sort((a, b) => (a.start === b.start ? a.end - b.end : a.start - b.start));
+  const merged = [];
+  ranges.forEach((range) => {
+    const last = merged[merged.length - 1];
+    if (!last || range.start > last.end) {
+      merged.push({ start: range.start, end: range.end });
+    } else if (range.end > last.end) {
+      last.end = range.end;
+    }
+  });
+
+  let result = "";
+  let cursor = 0;
+  merged.forEach((range) => {
+    if (range.start > cursor) {
+      result += escapeHtml(text.slice(cursor, range.start));
+    }
+    result += `<mark>${escapeHtml(text.slice(range.start, range.end))}</mark>`;
+    cursor = range.end;
+  });
+  if (cursor < text.length) {
+    result += escapeHtml(text.slice(cursor));
+  }
+  return result || escapeHtml(text);
+}
+
 function performSearch() {
   clearError();
   const query = searchInput.value.trim();
@@ -1117,7 +1731,8 @@ function performSearch() {
   const columnIndexes = getColumnIndexesForSearch();
 
   if (!query) {
-    filteredRows = [...rawRows];
+    filteredRows = rawRows.map((row) => row.slice());
+    filteredRowHighlights = filteredRows.map(() => new Array(headers.length).fill(null));
     renderPage(1);
     announceStatus(
       `${filteredRows.length.toLocaleString()} ligne${
@@ -1134,7 +1749,39 @@ function performSearch() {
       exactMatch: state.search.exactMatch,
       columnIndexes,
     });
+ codex/audit-application-and-add-column-filtering-09or3v
+    const operandTokens = tokens
+      .filter((token) => token.type === "operand")
+      .map((token) => token.value)
+      .filter((value) => value !== undefined);
+
+    filteredRows = indexes.map((rowIndex) => rawRows[rowIndex].slice());
+    filteredRowHighlights = indexes.map(() => new Array(headers.length).fill(null));
+
+    if (operandTokens.length) {
+      const options = {
+        caseSensitive: state.search.caseSensitive,
+        exactMatch: state.search.exactMatch,
+      };
+      filteredRows = indexes.map((rowIndex, position) => {
+        const baseRow = rawRows[rowIndex].slice();
+        const { summary, highlights } = computeRowHighlights(
+          rowIndex,
+          operandTokens,
+          options,
+          columnIndexes
+        );
+        if (matchesColumnIndex >= 0) {
+          baseRow[matchesColumnIndex] = summary;
+        }
+        filteredRowHighlights[position] = highlights;
+        return baseRow;
+      });
+    }
+
+
     filteredRows = indexes.map((i) => rawRows[i]);
+main
     renderPage(1);
     announceStatus(
       `${filteredRows.length.toLocaleString()} ligne${
@@ -1158,7 +1805,8 @@ function resetSearch() {
   if (currentMode === "compare" && comparisonRows.length) {
     updateComparisonDataset();
   } else {
-    filteredRows = [...rawRows];
+    filteredRows = rawRows.map((row) => row.slice());
+    filteredRowHighlights = filteredRows.map(() => new Array(headers.length).fill(null));
     renderPage(1);
     announceStatus(
       `${filteredRows.length.toLocaleString()} ligne${
@@ -1190,8 +1838,25 @@ async function copyToClipboard() {
   }
 }
 
+function sanitizeCellForExport(cell) {
+  if (cell === null || cell === undefined) {
+    return "";
+  }
+  const value = String(cell);
+  if (!value.includes("<")) {
+    return value;
+  }
+  return value.replace(/<\/?mark[^>]*>/gi, "");
+}
+
+function sanitizeRowsForExport(rows) {
+  return rows.map((row) => row.map((cell) => sanitizeCellForExport(cell)));
+}
+
 function convertRowsToCsv(headers, rows) {
-  const allRows = [headers, ...rows];
+  const safeHeaders = headers.map((header) => sanitizeCellForExport(header));
+  const safeRows = sanitizeRowsForExport(rows);
+  const allRows = [safeHeaders, ...safeRows];
   return allRows
     .map((row) =>
       row
@@ -1230,7 +1895,10 @@ function exportCsv(rows) {
 
 function exportXlsx(rows) {
   if (!rows.length) return;
-  const worksheetData = [headers, ...rows];
+  const worksheetData = [
+    headers.map((header) => sanitizeCellForExport(header)),
+    ...sanitizeRowsForExport(rows),
+  ];
   const worksheet = XLSX.utils.aoa_to_sheet(worksheetData);
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(workbook, worksheet, "Résultats");
@@ -1365,6 +2033,9 @@ function attachEvents() {
     });
   }
 
+ codex/audit-application-and-add-column-filtering-09or3v
+  if (dataTable) {
+    dataTable.addEventListener("change", handleHeaderToggleChange);
   if (columnFilterToggle) {
     columnFilterToggle.addEventListener("click", () => {
       toggleColumnFilterMenu();
@@ -1391,6 +2062,7 @@ function attachEvents() {
   if (doc) {
     doc.addEventListener("click", handleDocumentClick);
     doc.addEventListener("keydown", handleDocumentKeydown);
+ main
   }
 
   prevPageBtn.addEventListener("click", () => {
@@ -1431,7 +2103,17 @@ function __setTestState(state) {
   if (state.lowerRowTextCache) {
     lowerRowTextCache = state.lowerRowTextCache;
   }
+ codex/audit-application-and-add-column-filtering-09or3v
+  if (Array.isArray(state.tableColumns)) {
+    tableColumns = state.tableColumns;
+    columnKeyToIndex = new Map(tableColumns.map((column, index) => [column.key, index]));
+  }
+  if (typeof state.matchesColumnIndex === "number") {
+    matchesColumnIndex = state.matchesColumnIndex;
+  }
+
   availableColumns = Array.isArray(state.availableColumns) ? state.availableColumns : [];
+ main
   if (typeof state.currentPage === "number") {
     currentPage = state.currentPage;
   }
@@ -1447,13 +2129,29 @@ function __getTestState() {
     filteredRows,
     rowTextCache,
     lowerRowTextCache,
+ codex/audit-application-and-add-column-filtering-09or3v
+    tableColumns,
+    matchesColumnIndex,
+
     availableColumns,
+ main
     currentPage,
     currentFileName,
   };
 }
 
 /**
+ codex/audit-application-and-add-column-filtering-09or3v
+ * Checklist tests manuels — Comparaison & filtrage par colonne
+ * - [x] Import ref + comparaison : colonnes ref./cmp. visibles avec cases en tête + contrôle "Tout / Rien".
+ * - [x] Aucune case décochée → recherche équivalente à l'ancienne version (toutes les colonnes inspectées).
+ * - [x] Colonne décochée → résultats actualisés, résumé "Colonnes" mis à jour et aria-live annonce la limite.
+ * - [x] Sélection multi-colonnes → union logique des colonnes cochées, interactions casse/exact match respectées.
+ * - [x] Colonne "Mots-clés trouvés" : liste des tokens détectés + colonnes associées, export/copier sans balises HTML.
+ * - [x] Surbrillance <mark> dans les cellules correspondant aux mots-clés (respect options casse / correspondance exacte).
+ * - [x] Aucun résultat → message aria-live + ligne "Aucune ligne correspondante" dans le tableau.
+ * - [x] Dataset ~10k lignes → UI fluide (debounce 300 ms, worker conservé).
+
  * Checklist tests manuels — Filtrage par colonne
  * - [x] Aucune colonne cochée (ou "Toutes") : recherche identique au comportement initial.
  * - [x] Sélection d'une colonne unique : les résultats ne correspondent qu'aux valeurs de cette colonne.
@@ -1463,6 +2161,7 @@ function __getTestState() {
  * - [x] Exports CSV/XLSX et copie utilisent uniquement les lignes filtrées courantes.
  * - [x] Message aria-live explicite lorsqu'aucun résultat n'est trouvé et lors des limitations à N colonnes.
  * - [x] Dataset volumineux (~10k lignes) : navigation fluide grâce au debounce 300 ms et au worker existant.
+ main
  */
 
 if (typeof module !== "undefined" && module.exports) {
@@ -1475,7 +2174,12 @@ if (typeof module !== "undefined" && module.exports) {
     buildCaches,
     normalizeParsedData,
     extractKeywords,
+ codex/audit-application-and-add-column-filtering-09or3v
+    getColumnsFor,
+    getSingleFileColumns,
+
     getAvailableColumns,
+ main
     __setTestState,
     __getTestState,
   };
