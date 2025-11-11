@@ -8,6 +8,7 @@ const {
   buildCaches,
   normalizeParsedData,
   extractKeywords,
+  getAvailableColumns,
   __setTestState,
   __getTestState,
 } = require('../app.js');
@@ -129,7 +130,8 @@ test('buildCaches keeps caches synchronised', () => {
   const state = __getTestState();
   assert.strictEqual(state.rawRows.length, 4);
   assert.strictEqual(state.rowTextCache.length, 4);
-  assert.ok(state.lowerRowTextCache[0].includes('alice'));
+  assert.ok(Array.isArray(state.rowTextCache[0]));
+  assert.strictEqual(state.lowerRowTextCache[0][0], 'alice');
 });
 
 resetStateForTests();
@@ -159,6 +161,51 @@ test('extractKeywords returns unique trimmed entries', () => {
     ['beta', null],
   ]);
   assert.deepStrictEqual(keywords, ['Alpha', 'beta', 'Gamma']);
+});
+
+resetStateForTests();
+
+test('getAvailableColumns falls back to generated labels', () => {
+  __setTestState({
+    headers: [],
+    rawRows: [
+      ['A', 'B', 'C'],
+      ['D', 'E', 'F'],
+    ],
+  });
+  const columns = getAvailableColumns([
+    ['A', 'B', 'C'],
+  ]);
+  assert.deepStrictEqual(columns.map((col) => col.label), [
+    'Colonne 1',
+    'Colonne 2',
+    'Colonne 3',
+  ]);
+});
+
+resetStateForTests();
+
+test('evaluateQuery honours explicit column restriction', () => {
+  const indexes = evaluateQuery(tokenizeQuery('premium'), {
+    caseSensitive: false,
+    exactMatch: false,
+    columnIndexes: [1],
+  });
+  assert.deepStrictEqual(indexes, [0, 2, 3]);
+
+  const nameIndexes = evaluateQuery(tokenizeQuery('alice'), {
+    caseSensitive: false,
+    exactMatch: false,
+    columnIndexes: [0],
+  });
+  assert.deepStrictEqual(nameIndexes, [0]);
+
+  const restrictedIndexes = evaluateQuery(tokenizeQuery('alice'), {
+    caseSensitive: false,
+    exactMatch: false,
+    columnIndexes: [1],
+  });
+  assert.deepStrictEqual(restrictedIndexes, []);
 });
 
 const failed = results.filter((result) => result.status === 'failed');
