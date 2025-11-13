@@ -5,7 +5,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Explorateur de données</title>
     <link rel="stylesheet" href="styles.css" />
-    <script defer src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
     <script defer src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
     <script defer src="app.js"></script>
   </head>
@@ -40,8 +39,8 @@
 
           <div id="single-upload" class="uploader__panel">
             <p>Glissez-déposez votre fichier ici ou</p>
-            <label class="button" for="file-input">Sélectionnez un fichier</label>
-            <input id="file-input" type="file" accept=".csv,.xlsx,.xls" />
+            <label class="button" for="fileSingle">Sélectionnez un fichier</label>
+            <input id="fileSingle" type="file" accept=".csv,.xlsx,.xls" />
           </div>
 
           <div id="compare-upload" class="uploader__panel" hidden>
@@ -50,13 +49,13 @@
               Vous pouvez également déposer les deux fichiers directement dans la zone.
             </p>
             <div class="uploader__inputs">
-              <label class="button" for="reference-input">Fichier de référence</label>
-              <input id="reference-input" type="file" accept=".csv,.xlsx,.xls" />
+              <label class="button" for="fileRef">Fichier de référence</label>
+              <input id="fileRef" type="file" accept=".csv,.xlsx,.xls" />
               <span class="uploader__filename" id="reference-name"></span>
             </div>
             <div class="uploader__inputs">
-              <label class="button" for="comparison-input">Fichier à comparer</label>
-              <input id="comparison-input" type="file" accept=".csv,.xlsx,.xls" />
+              <label class="button" for="fileCmp">Fichier à comparer</label>
+              <input id="fileCmp" type="file" accept=".csv,.xlsx,.xls" />
               <span class="uploader__filename" id="comparison-name"></span>
             </div>
             <p class="uploader__summary" id="keywords-summary"></p>
@@ -66,6 +65,16 @@
             <div class="progress__bar" id="progress-bar"></div>
           </div>
           <p class="progress__label" id="progress-label"></p>
+          <div
+            class="spinner"
+            id="loading-spinner"
+            role="status"
+            aria-live="polite"
+            hidden
+          >
+            <span class="spinner__icon" aria-hidden="true"></span>
+            <span class="spinner__label" id="loading-spinner-label">Import en cours…</span>
+          </div>
           <p class="error" id="error-message" role="alert"></p>
         </div>
       </section>
@@ -85,7 +94,10 @@
             disabled
           >
             <legend>Rechercher dans</legend>
+ codex/audit-application-and-add-column-filtering-yhgnz5
+
 codex/audit-application-and-add-column-filtering-09or3v
+ main
             <p id="column-filter-label" class="column-filter__summary">Colonnes : Toutes</p>
             <p
               id="column-filter-live"
@@ -93,6 +105,8 @@ codex/audit-application-and-add-column-filtering-09or3v
               aria-live="polite"
               role="status"
             ></p>
+ codex/audit-application-and-add-column-filtering-yhgnz5
+
 
             <button
               type="button"
@@ -123,6 +137,7 @@ codex/audit-application-and-add-column-filtering-09or3v
               <div id="column-filter-options" class="column-filter__options"></div>
             </div>
             <p id="column-filter-live" class="visually-hidden" aria-live="polite"></p>
+ main
  main
           </fieldset>
           <label class="checkbox">

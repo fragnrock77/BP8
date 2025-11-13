@@ -1,11 +1,23 @@
 /**
+ codex/audit-application-and-add-column-filtering-yhgnz5
+ * Rapport de correctifs Import — CSV/XLS(X)
+ * - Causes probables : lecture via FileReader non centralisée et dépendance PapaParse bloquant la lecture hors CDN.
+ * - Changements effectués : importAnyFile mutualise FileReader + SheetJS, parseur CSV maison (BOM, délimiteur auto) et spinner avec erreurs détaillées.
+ * - Limites : encodages non UTF-8 non détectés automatiquement ; seules les premières feuilles XLS(X) sont analysées.
+ * - Tests manuels : CSV (, ; \t |) avec BOM, XLSX multi-onglets, drag & drop, reset, analyse & comparaison avec filtres + export.
+ */
+/**
+
  codex/audit-application-and-add-column-filtering-09or3v
+ main
  * Rapport de modifications — Comparaison avec cases d'en-tête
  * - Bugs corrigés : export limité aux résultats filtrés, réinitialisation sûre quand aucune colonne n'est cochée, nettoyage des états comparaison/ref.
  * - Décisions techniques : modèle de colonnes unifié (`tableColumns` + clés ref./cmp.), colonne "Mots-clés trouvés" calculée depuis les opérandes et surbrillance <mark>.
  * - Impact accessibilité : fieldset résumé, cases à cocher labellisées dans les th, aria-live pour limites de recherche et erreurs.
  * - Performance : caches de cellules restreints aux colonnes recherchables, debounce 300 ms conservé, worker inchangé.
  * - Tests : checklist manuelle actualisée (comparaison, export, 10k lignes) + suite automatisée mise à jour (colonnes ref./cmp.).
+ codex/audit-application-and-add-column-filtering-yhgnz5
+
 
  * Rapport de modifications — Filtrage par colonne
  * - Bugs corrigés : cache de recherche concaténé (faux positifs inter-colonnes) remplacé par un cache par cellule et annonces d'erreurs via aria-live pour éviter les silences en cas d'échec.
@@ -15,18 +27,25 @@
  * - Performance : debounce 300 ms sur recherche/filtre, réduction des colonnes inspectées, worker conservé.
  * - Tests manuels : checklist en fin de fichier (cas "Toutes", une colonne, multi, export, 10k lignes, options casse/exacte).
  main
+ main
  */
 
 const doc = typeof document !== "undefined" ? document : null;
 const dropZone = doc ? doc.getElementById("drop-zone") : null;
-const fileInput = doc ? doc.getElementById("file-input") : null;
+const fileInput = doc
+  ? doc.getElementById("fileSingle") || doc.getElementById("file-input")
+  : null;
 const modeRadios = doc
   ? Array.from(doc.querySelectorAll('input[name="analysis-mode"]'))
   : [];
 const singleUploadContainer = doc ? doc.getElementById("single-upload") : null;
 const compareUploadContainer = doc ? doc.getElementById("compare-upload") : null;
-const referenceInput = doc ? doc.getElementById("reference-input") : null;
-const comparisonInput = doc ? doc.getElementById("comparison-input") : null;
+const referenceInput = doc
+  ? doc.getElementById("fileRef") || doc.getElementById("reference-input")
+  : null;
+const comparisonInput = doc
+  ? doc.getElementById("fileCmp") || doc.getElementById("comparison-input")
+  : null;
 const referenceName = doc ? doc.getElementById("reference-name") : { textContent: "" };
 const comparisonName = doc
   ? doc.getElementById("comparison-name")
@@ -34,7 +53,14 @@ const comparisonName = doc
 const keywordsSummary = doc ? doc.getElementById("keywords-summary") : { textContent: "" };
 const progressBar = doc ? doc.getElementById("progress-bar") : null;
 const progressLabel = doc ? doc.getElementById("progress-label") : null;
+const loadingSpinner = doc ? doc.getElementById("loading-spinner") : null;
+const loadingSpinnerLabel = doc
+  ? doc.getElementById("loading-spinner-label")
+  : null;
 const errorMessage = doc ? doc.getElementById("error-message") : null;
+if (errorMessage) {
+  errorMessage.hidden = true;
+}
 const controlsSection = doc ? doc.getElementById("controls") : { hidden: true };
 const resultsSection = doc ? doc.getElementById("results") : { hidden: true };
 const searchInput = doc ? doc.getElementById("search-input") : { value: "" };
@@ -54,6 +80,8 @@ const copyButton = doc ? doc.getElementById("copy-button") : null;
 const exportCsvButton = doc ? doc.getElementById("export-csv-button") : null;
 const exportXlsxButton = doc ? doc.getElementById("export-xlsx-button") : null;
 const columnFilterFieldset = doc ? doc.getElementById("column-filter") : null;
+ codex/audit-application-and-add-column-filtering-yhgnz5
+
  codex/audit-application-and-add-column-filtering-09or3v
 
 const columnFilterToggle = doc ? doc.getElementById("column-filter-toggle") : null;
@@ -63,6 +91,7 @@ const columnFilterOptionsContainer = doc
   : null;
 const columnFilterAll = doc ? doc.getElementById("column-filter-all") : null;
  main
+ main
 const columnFilterLabel = doc
   ? doc.getElementById("column-filter-label")
   : { textContent: "" };
@@ -71,7 +100,50 @@ const liveFeedback = doc ? doc.getElementById("live-feedback") : null;
 
 const PAGE_SIZE = 100;
 const SEARCH_DEBOUNCE = 300;
+ codex/audit-application-and-add-column-filtering-yhgnz5
+const RENDER_BATCH_SIZE = 200;
+const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
+
+const activeReaders = new Set();
+
+const STORAGE_KEYS = {
+  selectedRef: "bp8.search.selectedColumns.ref",
+  selectedCmp: "bp8.search.selectedColumns.cmp",
+};
+
+const state = {
+  search: {
+    query: "",
+    caseSensitive: false,
+    exactMatch: false,
+    selectedKeys: null,
+  },
+};
+
+function debounce(fn, delay) {
+  let timerId = null;
+  function debounced(...args) {
+    if (timerId) {
+      clearTimeout(timerId);
+    }
+    timerId = setTimeout(() => {
+      timerId = null;
+      fn.apply(this, args);
+    }, delay);
+  }
+  debounced.cancel = () => {
+    if (timerId) {
+      clearTimeout(timerId);
+      timerId = null;
+    }
+  };
+  return debounced;
+}
+
+const scheduleSearch = debounce(() => performSearch({ source: "debounce" }), SEARCH_DEBOUNCE);
+
 const MAX_FILE_SIZE = 200 * 1024 * 1024; // 200MB
+ main
 
 const STORAGE_KEYS = {
  codex/audit-application-and-add-column-filtering-09or3v
@@ -159,13 +231,19 @@ let rawRows = [];
 let filteredRows = [];
 let rowTextCache = [];
 let lowerRowTextCache = [];
+ codex/audit-application-and-add-column-filtering-yhgnz5
+
  codex/audit-application-and-add-column-filtering-09or3v
+ main
 let tableColumns = [];
 let columnKeyToIndex = new Map();
 let filteredRowHighlights = [];
 let matchesColumnIndex = -1;
+ codex/audit-application-and-add-column-filtering-yhgnz5
+
 
 let availableColumns = [];
+ main
  main
 let currentPage = 1;
 let currentFileName = "";
@@ -178,20 +256,29 @@ let comparisonRows = [];
 let referenceFileName = "";
 let comparisonFileName = "";
 
-function resetDataset() {
+function resetDataset(options = {}) {
+  if (!options.keepSpinner) {
+    setLoading(false, "");
+  }
   headers = [];
   rawRows = [];
   filteredRows = [];
   rowTextCache = [];
   lowerRowTextCache = [];
+ codex/audit-application-and-add-column-filtering-yhgnz5
+
  codex/audit-application-and-add-column-filtering-09or3v
+ main
   tableColumns = [];
   columnKeyToIndex = new Map();
   filteredRowHighlights = [];
   matchesColumnIndex = -1;
   state.search.selectedKeys = null;
+ codex/audit-application-and-add-column-filtering-yhgnz5
+
 
   availableColumns = [];
+ main
  main
   currentPage = 1;
   currentFileName = "";
@@ -204,6 +291,10 @@ function resetDataset() {
     dataTable.innerHTML = "";
   }
   resultStats.textContent = "";
+ codex/audit-application-and-add-column-filtering-yhgnz5
+  setColumnFilterInteractivity(true);
+  updateSearchSummary();
+  announceColumnSelection();
  codex/audit-application-and-add-column-filtering-09or3v
   setColumnFilterInteractivity(true);
   updateSearchSummary();
@@ -217,18 +308,32 @@ function announceStatus(message) {
   if (liveFeedback) {
     liveFeedback.textContent = message || "";
   }
+ main
 }
 
-function showError(message) {
-  if (errorMessage) {
-    errorMessage.textContent = message;
+function announceStatus(message) {
+  if (liveFeedback) {
+    liveFeedback.textContent = message || "";
   }
+}
+
+function showError(message, detail = "") {
+  const combined = detail ? `${message} ${detail}` : message;
+  if (errorMessage) {
+    errorMessage.textContent = combined;
+    errorMessage.hidden = false;
+  }
+ codex/audit-application-and-add-column-filtering-yhgnz5
+  announceStatus(combined);
+
   announceStatus(message);
+ main
 }
 
 function clearError() {
   if (errorMessage) {
     errorMessage.textContent = "";
+    errorMessage.hidden = true;
   }
   announceStatus("");
 }
@@ -240,6 +345,42 @@ function updateProgress(percent, label) {
   if (progressLabel) {
     progressLabel.textContent = label;
   }
+}
+
+function setLoading(isLoading, label) {
+  if (!loadingSpinner) {
+    return;
+  }
+  if (isLoading) {
+    const spinnerLabel = typeof label === "string" && label.trim() ? label : "Import en cours…";
+    loadingSpinner.hidden = false;
+    loadingSpinner.setAttribute("aria-busy", "true");
+    if (loadingSpinnerLabel) {
+      loadingSpinnerLabel.textContent = spinnerLabel;
+    }
+    updateProgress(0, spinnerLabel);
+  } else {
+    loadingSpinner.hidden = true;
+    loadingSpinner.removeAttribute("aria-busy");
+    if (label !== undefined) {
+      if (label) {
+        updateProgress(100, label);
+      } else {
+        updateProgress(0, "");
+      }
+    }
+  }
+}
+
+function abortActiveReaders() {
+  activeReaders.forEach((reader) => {
+    try {
+      reader.abort();
+    } catch (error) {
+      console.warn("Lecture interrompue", error);
+    }
+  });
+  activeReaders.clear();
 }
 
 function formatBytes(bytes) {
@@ -260,7 +401,10 @@ function sanitizeColumnLabel(header, index) {
   return String(header);
 }
 
+ codex/audit-application-and-add-column-filtering-yhgnz5
+
  codex/audit-application-and-add-column-filtering-09or3v
+ main
 function buildColumns(headers, rows, { prefix, origin }) {
   const firstRow = Array.isArray(rows) && rows.length ? rows[0] : [];
   const columnCount = Math.max(headers.length, firstRow.length);
@@ -300,7 +444,10 @@ function getSingleFileColumns(headers, rows) {
   );
 }
 
+ codex/audit-application-and-add-column-filtering-yhgnz5
 
+
+ main
  main
 function getAvailableColumns(rows = rawRows) {
   const firstRow = Array.isArray(rows) && rows.length ? rows[0] : [];
@@ -315,7 +462,10 @@ function getAvailableColumns(rows = rawRows) {
   return detected;
 }
 
+ codex/audit-application-and-add-column-filtering-yhgnz5
+
  codex/audit-application-and-add-column-filtering-09or3v
+ main
 function loadSelectedKeysForComparison() {
   if (typeof window === "undefined") {
     return null;
@@ -467,6 +617,8 @@ function syncSelectedKeysWithColumns({ loadStored = false } = {}) {
 function getDefaultColumnIndexes() {
   if (tableColumns.length) {
     return tableColumns.map((_, index) => index);
+ codex/audit-application-and-add-column-filtering-yhgnz5
+
 
 function syncSelectedColumnsWithAvailable() {
   if (!state.search.selectedColumns || !state.search.selectedColumns.length) {
@@ -632,6 +784,7 @@ function getDefaultColumnIndexes() {
   if (availableColumns.length) {
     return availableColumns.map((column) => Number(column.key));
  main
+ main
   }
   const candidateLength = Math.max(headers.length, rawRows[0]?.length || 0);
   if (!candidateLength) {
@@ -641,7 +794,10 @@ function getDefaultColumnIndexes() {
 }
 
 function getColumnIndexesForSearch() {
+ codex/audit-application-and-add-column-filtering-yhgnz5
+
  codex/audit-application-and-add-column-filtering-09or3v
+ main
   if (!state.search.selectedKeys || !state.search.selectedKeys.size) {
     return getDefaultColumnIndexes();
   }
@@ -737,6 +893,8 @@ function handleHeaderToggleChange(event) {
     return;
   }
   handleColumnToggle(target, target.checked);
+ codex/audit-application-and-add-column-filtering-yhgnz5
+
 
   if (!state.search.selectedColumns || !state.search.selectedColumns.length) {
     return getDefaultColumnIndexes();
@@ -828,6 +986,7 @@ function handleDocumentKeydown(event) {
     columnFilterToggle.focus({ preventScroll: true });
   }
  main
+ main
 }
 
 function clearComparisonState() {
@@ -883,6 +1042,20 @@ function sanitizeValue(value) {
   return typeof value === "string" ? value : String(value);
 }
 
+function normalizeHeaders(headers, prefix = "") {
+  const seen = new Map();
+  return headers.map((header, index) => {
+    let label = sanitizeValue(header).trim();
+    if (!label) {
+      label = `Colonne ${index + 1}`;
+    }
+    const base = prefix ? `${prefix}${label}` : label;
+    const count = seen.get(base) || 0;
+    seen.set(base, count + 1);
+    return count === 0 ? base : `${base} (${count + 1})`;
+  });
+}
+
 function sanitizeRow(row) {
   if (!Array.isArray(row)) {
     return [];
@@ -891,16 +1064,48 @@ function sanitizeRow(row) {
 }
 
 function normalizeParsedData(parsed) {
-  const rawHeaders = Array.isArray(parsed.headers) ? parsed.headers : [];
-  const rawRows = Array.isArray(parsed.rows) ? parsed.rows : [];
-  const sanitizedRows = rawRows.map((row) => sanitizeRow(row));
-  let sanitizedHeaders = rawHeaders.map((header) => sanitizeValue(header));
+  const rawHeaders = Array.isArray(parsed?.headers) ? parsed.headers : [];
+  const rawRows = Array.isArray(parsed?.rows) ? parsed.rows.slice() : [];
 
-  if (!sanitizedHeaders.length && sanitizedRows.length) {
-    sanitizedHeaders = sanitizedRows.shift() || [];
+  let headerKeys = rawHeaders.map((header) => sanitizeValue(header));
+  let workingRows = rawRows;
+
+  if (!headerKeys.length && workingRows.length) {
+    const firstRow = workingRows[0];
+    if (Array.isArray(firstRow)) {
+      headerKeys = firstRow.map((value, index) => sanitizeValue(value));
+      workingRows = workingRows.slice(1);
+    } else if (firstRow && typeof firstRow === "object") {
+      headerKeys = Object.keys(firstRow);
+    }
   }
 
-  return { headers: sanitizedHeaders, rows: sanitizedRows };
+  if (!headerKeys.length) {
+    return { headers: [], rows: [] };
+  }
+
+  const normalizedHeaders = normalizeHeaders(headerKeys);
+
+  const normalizedRows = workingRows.map((row) => {
+    if (Array.isArray(row)) {
+      return normalizedHeaders.map((_, index) => sanitizeValue(row[index]));
+    }
+    if (row && typeof row === "object") {
+      return normalizedHeaders.map((normalizedHeader, index) => {
+        const key = headerKeys[index] ?? normalizedHeader;
+        const fallback = `Colonne ${index + 1}`;
+        const value = Object.prototype.hasOwnProperty.call(row, key)
+          ? row[key]
+          : Object.prototype.hasOwnProperty.call(row, normalizedHeader)
+          ? row[normalizedHeader]
+          : row[fallback];
+        return sanitizeValue(value);
+      });
+    }
+    return new Array(normalizedHeaders.length).fill("");
+  });
+
+  return { headers: normalizedHeaders, rows: normalizedRows };
 }
 
 function extractKeywords(rows) {
@@ -951,14 +1156,20 @@ function applyDataset({ columns, rows, fileName, includeMatchesColumn = false, l
   filteredRows = rawRows.map((row) => row.slice());
   filteredRowHighlights = filteredRows.map(() => new Array(headers.length).fill(null));
   buildCaches();
+ codex/audit-application-and-add-column-filtering-yhgnz5
+
  codex/audit-application-and-add-column-filtering-09or3v
+ main
   syncSelectedKeysWithColumns({ loadStored });
   if (currentMode === "compare") {
     saveSelectedKeysForComparison(state.search.selectedKeys);
   }
 
+ codex/audit-application-and-add-column-filtering-yhgnz5
+
 
   updateAvailableColumns();
+ main
  main
   currentFileName = fileName || "";
   controlsSection.hidden = false;
@@ -973,21 +1184,284 @@ function applyDataset({ columns, rows, fileName, includeMatchesColumn = false, l
       } affichée${filteredRows.length > 1 ? "s" : ""}.`
     );
   }
+ codex/audit-application-and-add-column-filtering-yhgnz5
 }
 
-function getFileExtension(file) {
+function getExt(fileName) {
+  if (!fileName || typeof fileName !== "string") {
+    return "unknown";
+  }
+  const match = fileName.toLowerCase().match(/\.([^.]+)$/);
+  if (!match) {
+    return "unknown";
+  }
+  const extension = match[1];
+  if (extension === "csv" || extension === "xlsx" || extension === "xls") {
+    return extension;
+  }
+  return "unknown";
+}
+
+function readFileContent(file, { ext, onProgress } = {}) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    activeReaders.add(reader);
+
+    reader.onerror = () => {
+      activeReaders.delete(reader);
+      const error = reader.error || new Error("Lecture du fichier impossible.");
+      reject(error);
+    };
+
+    reader.onabort = () => {
+      activeReaders.delete(reader);
+      const abortError = new Error("Lecture interrompue.");
+      abortError.name = "AbortError";
+      reject(abortError);
+    };
+
+    reader.onload = () => {
+      activeReaders.delete(reader);
+      resolve(reader.result);
+    };
+
+    reader.onprogress = (event) => {
+      if (typeof onProgress === "function" && event.lengthComputable) {
+        const total = event.total || file.size;
+        const percent = Math.min(60, Math.round((event.loaded / total) * 60));
+        const label = `Lecture ${formatBytes(event.loaded)} / ${formatBytes(total)}`;
+        onProgress(percent, label);
+      }
+    };
+
+    try {
+      if (ext === "csv") {
+        reader.readAsText(file);
+      } else {
+        reader.readAsArrayBuffer(file);
+      }
+    } catch (error) {
+      activeReaders.delete(reader);
+      reject(error);
+    }
+  });
+}
+
+function stripBom(text) {
+  if (text.charCodeAt(0) === 0xfeff) {
+    return text.slice(1);
+  }
+  return text;
+}
+
+function detectDelimiter(text) {
+  const delimiters = [",", ";", "\t", "|"];
+  const sample = text.slice(0, 10000);
+  const lines = sample.split(/\r\n|\n|\r/).filter((line) => line.length).slice(0, 20);
+  if (!lines.length) {
+    return ",";
+  }
+  let bestDelimiter = ",";
+  let bestScore = -Infinity;
+  delimiters.forEach((delimiter) => {
+    let score = 0;
+    let previousCount = null;
+    lines.forEach((line) => {
+      const count = line.split(delimiter).length - 1;
+      if (count > 0) {
+        score += count;
+        if (previousCount !== null && previousCount !== count) {
+          score -= Math.abs(previousCount - count);
+        }
+        previousCount = count;
+      }
+    });
+    if (score > bestScore) {
+      bestScore = score;
+      bestDelimiter = delimiter;
+    }
+  });
+  return bestScore <= 0 ? "," : bestDelimiter;
+}
+
+function parseCSV(text, { onProgress } = {}) {
+  return new Promise((resolve, reject) => {
+    try {
+      if (!text) {
+        resolve({ headers: [], rows: [] });
+        return;
+      }
+      const content = stripBom(text);
+      const delimiter = detectDelimiter(content);
+      const rows = [];
+      let row = [];
+      let field = "";
+      let inQuotes = false;
+      let index = 0;
+      const length = content.length;
+      const chunkSize = 200000;
+
+      const commitRow = () => {
+        const shouldKeep = rows.length === 0 || row.some((value) => value !== "");
+        if (shouldKeep) {
+          rows.push(row.slice());
+        }
+        row = [];
+      };
+
+      const pushField = () => {
+        row.push(field);
+        field = "";
+      };
+
+      const processChunk = () => {
+        const limit = Math.min(index + chunkSize, length);
+        while (index < limit) {
+          const char = content[index];
+          if (char === '"') {
+            if (inQuotes) {
+              if (content[index + 1] === '"') {
+                field += '"';
+                index += 1;
+              } else {
+                inQuotes = false;
+              }
+            } else {
+              inQuotes = true;
+            }
+            index += 1;
+            continue;
+          }
+
+          if (!inQuotes && char === delimiter) {
+            pushField();
+            index += 1;
+            continue;
+          }
+
+          if (!inQuotes && (char === "\n" || char === "\r")) {
+            if (char === "\r" && content[index + 1] === "\n") {
+              index += 1;
+            }
+            pushField();
+            commitRow();
+            index += 1;
+            continue;
+          }
+
+          field += char;
+          index += 1;
+        }
+
+        if (index < length) {
+          if (typeof onProgress === "function") {
+            const percent = 60 + Math.min(38, Math.round((index / length) * 38));
+            const label = `${rows.length.toLocaleString()} lignes analysées`;
+            onProgress(percent, label);
+          }
+          setTimeout(processChunk, 0);
+        } else {
+          pushField();
+          if (row.length && row.some((value) => value !== "")) {
+            commitRow();
+          } else if (rows.length === 0) {
+            commitRow();
+          } else {
+            row = [];
+          }
+
+          const [headerRow = [], ...dataRows] = rows;
+          if (headerRow.length === 0 && dataRows.length === 0) {
+            resolve({ headers: [], rows: [] });
+            return;
+          }
+
+          const headers = normalizeHeaders(headerRow);
+          const filteredRows = dataRows.filter((cells) =>
+            Array.isArray(cells) ? cells.some((value) => value !== "") : false
+          );
+          const objects = filteredRows.map((cells) => {
+            const entry = {};
+            headers.forEach((header, columnIndex) => {
+              entry[header] = sanitizeValue(cells[columnIndex]);
+            });
+            return entry;
+          });
+          resolve({ headers, rows: objects });
+        }
+      };
+
+      processChunk();
+    } catch (error) {
+      reject(error);
+    }
+  });
+
+ main
+}
+
+function parseXLSX(arrayBuffer, { onProgress } = {}) {
+  if (typeof XLSX === "undefined") {
+    throw new Error("La bibliothèque XLSX est indisponible.");
+  }
+  if (typeof onProgress === "function") {
+    onProgress(75, "Analyse du classeur...");
+  }
+  const workbook = XLSX.read(arrayBuffer, { type: "array", dense: true });
+  const sheetName = workbook.SheetNames[0];
+  if (!sheetName) {
+    return { headers: [], rows: [] };
+  }
+  if (typeof onProgress === "function") {
+    onProgress(85, `Lecture de la feuille ${sheetName}`);
+  }
+  const sheet = workbook.Sheets[sheetName];
+  const sheetData = XLSX.utils.sheet_to_json(sheet, {
+    header: 1,
+    blankrows: false,
+    defval: "",
+  });
+  const [headerRow = [], ...dataRows] = sheetData;
+  if (!headerRow.length && !dataRows.length) {
+    return { headers: [], rows: [] };
+  }
+  const headers = normalizeHeaders(headerRow);
+  const objects = dataRows
+    .map((cells) => {
+      const entry = {};
+      headers.forEach((header, columnIndex) => {
+        entry[header] = sanitizeValue(cells?.[columnIndex]);
+      });
+      return entry;
+    })
+    .filter((entry) => headers.some((header) => entry[header] !== ""));
+  return { headers, rows: objects };
+}
+
+async function importAnyFile(file, { onProgress } = {}) {
+  if (!file) {
+    throw new Error("Aucun fichier fourni.");
+  }
   if (file.size > MAX_FILE_SIZE) {
-    throw new Error(
-      `Le fichier est trop volumineux (${formatBytes(file.size)}). Limite : ${formatBytes(
-        MAX_FILE_SIZE
-      )}.`
-    );
+    throw new Error("Fichier trop volumineux, essayez de le scinder.");
   }
-  const extension = file.name.split(".").pop()?.toLowerCase();
-  if (!extension || !["csv", "xlsx", "xls"].includes(extension)) {
-    throw new Error("Format non supporté. Seuls les fichiers CSV ou XLSX sont acceptés.");
+  const extension = getExt(file.name);
+  if (extension === "unknown") {
+    throw new Error("Format non supporté. Choisissez un CSV, XLS ou XLSX.");
   }
-  return extension;
+
+  if (typeof onProgress === "function") {
+    onProgress(1, `Lecture de ${file.name} (${formatBytes(file.size)})`);
+  }
+
+  const content = await readFileContent(file, { ext: extension, onProgress });
+
+  if (extension === "csv") {
+    const text = typeof content === "string" ? content : new TextDecoder("utf-8").decode(content);
+    return parseCSV(text, { onProgress });
+  }
+
+  return parseXLSX(content, { onProgress });
 }
 
 function updateReferenceSummary() {
@@ -1010,6 +1484,11 @@ function updateComparisonDataset() {
     return;
   }
 
+ codex/audit-application-and-add-column-filtering-yhgnz5
+  const refColumns = getColumnsFor("ref", referenceRows, referenceHeaders);
+  const cmpColumns = getColumnsFor("cmp", comparisonRows, comparisonHeaders);
+  const columns = [...refColumns, ...cmpColumns];
+
  codex/audit-application-and-add-column-filtering-09or3v
   const refColumns = getColumnsFor("ref", referenceRows, referenceHeaders);
   const cmpColumns = getColumnsFor("cmp", comparisonRows, comparisonHeaders);
@@ -1021,6 +1500,7 @@ function updateComparisonDataset() {
   };
   state.search.caseSensitive = options.caseSensitive;
   state.search.exactMatch = options.exactMatch;
+ main
  main
 
   if (!columns.length) {
@@ -1036,10 +1516,17 @@ function updateComparisonDataset() {
     const values = [];
     refColumns.forEach((column) => {
       values.push(sanitizeValue(refRow[column.index]));
+ codex/audit-application-and-add-column-filtering-yhgnz5
     });
     cmpColumns.forEach((column) => {
       values.push(sanitizeValue(cmpRow[column.index]));
     });
+
+    });
+    cmpColumns.forEach((column) => {
+      values.push(sanitizeValue(cmpRow[column.index]));
+    });
+ main
     return values;
   });
 
@@ -1064,29 +1551,24 @@ async function handleSingleFile(files) {
   const [file] = files ? Array.from(files).filter(Boolean) : [];
   if (!file) return;
   clearError();
+  abortActiveReaders();
   clearComparisonState();
   if (fileInput) {
     fileInput.value = "";
   }
 
-  let extension;
-  try {
-    extension = getFileExtension(file);
-  } catch (validationError) {
-    showError(validationError.message);
-    return;
-  }
-
   currentFileName = file.name.replace(/\.[^.]+$/, "");
-  updateProgress(0, "Préparation du fichier...");
-
+  let finalLabel;
   try {
-    const parsed =
-      extension === "csv" ? await parseCsv(file) : await parseXlsx(file);
+    setLoading(true, `Lecture de ${file.name} (${formatBytes(file.size)})`);
+    const parsed = await importAnyFile(file, {
+      onProgress: (percent, label) => updateProgress(percent, label),
+    });
     const { headers: parsedHeaders, rows } = normalizeParsedData(parsed);
     if (!rows.length) {
       showError("Aucune donnée trouvée dans le fichier.");
-      resetDataset();
+      resetDataset({ keepSpinner: true });
+      finalLabel = "Chargement terminé";
       return;
     }
 
@@ -1098,14 +1580,24 @@ async function handleSingleFile(files) {
       includeMatchesColumn: false,
       loadStored: false,
     });
+ codex/audit-application-and-add-column-filtering-yhgnz5
+    finalLabel = "Chargement terminé";
+
+ main
   } catch (error) {
-    console.error(error);
-    showError(
-      "Impossible de lire le fichier. Vérifiez son encodage ou son intégrité et réessayez."
-    );
-    resetDataset();
+    if (error instanceof Error && error.name === "AbortError") {
+      finalLabel = "Chargement annulé";
+    } else {
+      console.error(error);
+      showError(
+        "Impossible de lire le fichier.",
+        error instanceof Error ? error.message : ""
+      );
+      resetDataset();
+      finalLabel = "Échec du chargement";
+    }
   } finally {
-    updateProgress(100, "Chargement terminé");
+    setLoading(false, finalLabel);
   }
 }
 
@@ -1113,25 +1605,24 @@ async function handleReferenceFiles(files) {
   const [file] = files ? Array.from(files).filter(Boolean) : [];
   if (!file) return;
   clearError();
+  abortActiveReaders();
   if (referenceInput) {
     referenceInput.value = "";
   }
 
-  let extension;
-  try {
-    extension = getFileExtension(file);
-  } catch (validationError) {
-    showError(validationError.message);
-    return;
-  }
-
   referenceName.textContent = file.name;
   referenceFileName = file.name.replace(/\.[^.]+$/, "");
-  updateProgress(0, "Préparation du fichier de référence...");
-
+  let finalLabel;
   try {
+ codex/audit-application-and-add-column-filtering-yhgnz5
+    setLoading(true, `Lecture de ${file.name} (${formatBytes(file.size)})`);
+    const parsed = await importAnyFile(file, {
+      onProgress: (percent, label) => updateProgress(percent, label),
+    });
+
     const parsed =
       extension === "csv" ? await parseCsv(file) : await parseXlsx(file);
+ main
     const { headers: parsedHeaders, rows } = normalizeParsedData(parsed);
     referenceHeaders = parsedHeaders;
     referenceRows = rows;
@@ -1141,7 +1632,8 @@ async function handleReferenceFiles(files) {
       referenceRows = [];
       updateReferenceSummary();
       showError("Aucune donnée trouvée dans le fichier de référence.");
-      resetDataset();
+      resetDataset({ keepSpinner: true });
+      finalLabel = "Chargement terminé";
       return;
     }
 
@@ -1149,16 +1641,30 @@ async function handleReferenceFiles(files) {
     updateReferenceSummary();
 
     if (!comparisonHeaders.length && !comparisonRows.length) {
+ codex/audit-application-and-add-column-filtering-yhgnz5
+      resetDataset({ keepSpinner: true });
+      finalLabel = "Fichier de référence chargé";
+
       resetDataset();
       updateProgress(100, "Fichier de référence chargé");
+ main
     } else {
       updateComparisonDataset();
+      finalLabel = "Comparaison terminée";
     }
   } catch (error) {
-    console.error(error);
-    showError(
-      "Impossible de lire le fichier de référence. Vérifiez son encodage ou son intégrité et réessayez."
-    );
+    if (error instanceof Error && error.name === "AbortError") {
+      finalLabel = "Chargement annulé";
+    } else {
+      console.error(error);
+      showError(
+        "Impossible de lire le fichier de référence.",
+        error instanceof Error ? error.message : ""
+      );
+      finalLabel = "Échec du chargement";
+    }
+  } finally {
+    setLoading(false, finalLabel);
   }
 }
 
@@ -1166,31 +1672,30 @@ async function handleComparisonFiles(files) {
   const [file] = files ? Array.from(files).filter(Boolean) : [];
   if (!file) return;
   clearError();
+  abortActiveReaders();
   if (comparisonInput) {
     comparisonInput.value = "";
   }
 
-  let extension;
-  try {
-    extension = getFileExtension(file);
-  } catch (validationError) {
-    showError(validationError.message);
-    return;
-  }
-
   comparisonName.textContent = file.name;
   comparisonFileName = file.name.replace(/\.[^.]+$/, "");
-  updateProgress(0, "Préparation du fichier à comparer...");
-
+  let finalLabel;
   try {
-    const parsed =
-      extension === "csv" ? await parseCsv(file) : await parseXlsx(file);
+    setLoading(true, `Lecture de ${file.name} (${formatBytes(file.size)})`);
+    const parsed = await importAnyFile(file, {
+      onProgress: (percent, label) => updateProgress(percent, label),
+    });
     const { headers: parsedHeaders, rows } = normalizeParsedData(parsed);
     if (!rows.length) {
       comparisonHeaders = [];
       comparisonRows = [];
+ codex/audit-application-and-add-column-filtering-yhgnz5
+      resetDataset({ keepSpinner: true });
+
       resetDataset();
+ main
       showError("Aucune donnée trouvée dans le fichier à comparer.");
+      finalLabel = "Chargement terminé";
       return;
     }
 
@@ -1198,16 +1703,30 @@ async function handleComparisonFiles(files) {
     comparisonRows = rows;
 
     if (!referenceHeaders.length && !referenceRows.length) {
+ codex/audit-application-and-add-column-filtering-yhgnz5
+      resetDataset({ keepSpinner: true });
+      finalLabel = "Fichier à comparer chargé";
+
       resetDataset();
       updateProgress(100, "Fichier à comparer chargé");
+ main
     } else {
       updateComparisonDataset();
+      finalLabel = "Comparaison terminée";
     }
   } catch (error) {
-    console.error(error);
-    showError(
-      "Impossible de lire le fichier à comparer. Vérifiez son encodage ou son intégrité et réessayez."
-    );
+    if (error instanceof Error && error.name === "AbortError") {
+      finalLabel = "Chargement annulé";
+    } else {
+      console.error(error);
+      showError(
+        "Impossible de lire le fichier à comparer.",
+        error instanceof Error ? error.message : ""
+      );
+      finalLabel = "Échec du chargement";
+    }
+  } finally {
+    setLoading(false, finalLabel);
   }
 }
 
@@ -1230,65 +1749,20 @@ async function handleCompareDrop(files) {
   }
 }
 
-function parseCsv(file) {
-  return new Promise((resolve, reject) => {
-    const rows = [];
-    let headerRow = null;
-    let totalRows = 0;
-
-    Papa.parse(file, {
-      worker: true,
-      skipEmptyLines: "greedy",
-      chunkSize: 1024 * 1024,
-      step: (results, parser) => {
-        const { data, errors, meta } = results;
-        if (errors.length) {
-          parser.abort();
-          reject(new Error(errors.map((err) => err.message).join("; ")));
-          return;
-        }
-
-        if (!headerRow) {
-          headerRow = data;
-        } else {
-          rows.push(data);
-        }
-
-        totalRows += 1;
-        const percent = Math.min(99, Math.round((meta.cursor / file.size) * 100));
-        updateProgress(percent, `${totalRows.toLocaleString()} lignes lues`);
-      },
-      complete: () => {
-        resolve({ headers: headerRow, rows });
-      },
-      error: (error) => {
-        reject(error);
-      },
-    });
-  });
-}
-
-async function parseXlsx(file) {
-  const data = await file.arrayBuffer();
-  const workbook = XLSX.read(data, { type: "array", dense: true });
-  const sheetName = workbook.SheetNames[0];
-  if (!sheetName) {
-    throw new Error("Le fichier ne contient pas de feuille exploitable.");
-  }
-  const sheet = workbook.Sheets[sheetName];
-  const sheetData = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
-  const [headerRow, ...rows] = sheetData;
-  return { headers: headerRow, rows };
-}
-
 function buildCaches() {
+ codex/audit-application-and-add-column-filtering-yhgnz5
+
  codex/audit-application-and-add-column-filtering-09or3v
+ main
   const searchColumnCount = tableColumns.length || Math.max(headers.length, 0);
   rowTextCache = rawRows.map((row) =>
     Array.from({ length: searchColumnCount }, (_, index) => sanitizeValue(row?.[index]))
   );
+ codex/audit-application-and-add-column-filtering-yhgnz5
+
 
   rowTextCache = rawRows.map((row) => row.map((value) => sanitizeValue(value)));
+ main
  main
   lowerRowTextCache = rowTextCache.map((cells) => cells.map((cell) => cell.toLowerCase()));
 }
@@ -1381,6 +1855,42 @@ function renderTable(rows, { highlights = [] } = {}) {
   tableHead.appendChild(headerRow);
 
   const tableBody = doc.createElement("tbody");
+ codex/audit-application-and-add-column-filtering-yhgnz5
+  dataTable.innerHTML = "";
+  const fragment = doc.createDocumentFragment();
+  fragment.appendChild(tableHead);
+  fragment.appendChild(tableBody);
+  dataTable.appendChild(fragment);
+
+  const totalRows = rows.length;
+  if (totalRows === 0) {
+    return;
+  }
+
+  let rowIndex = 0;
+  const processBatch = () => {
+    const batchFragment = doc.createDocumentFragment();
+    const limit = Math.min(rowIndex + RENDER_BATCH_SIZE, totalRows);
+    for (; rowIndex < limit; rowIndex += 1) {
+      const tr = doc.createElement("tr");
+      const currentRow = rows[rowIndex];
+      const rowHighlight = highlights[rowIndex] || [];
+      for (let index = 0; index < headers.length; index += 1) {
+        const td = doc.createElement("td");
+        if (matchesColumnIndex >= 0 && index === matchesColumnIndex) {
+          td.classList.add("matches-cell");
+        }
+        const highlightContent = rowHighlight[index];
+        if (highlightContent) {
+          td.innerHTML = highlightContent;
+        } else {
+          const value = currentRow?.[index];
+          td.textContent = value === undefined || value === null ? "" : String(value);
+        }
+        tr.appendChild(td);
+      }
+      batchFragment.appendChild(tr);
+
   rows.forEach((row, rowIndex) => {
     const tr = doc.createElement("tr");
     const rowHighlight = highlights[rowIndex] || [];
@@ -1397,13 +1907,15 @@ function renderTable(rows, { highlights = [] } = {}) {
         td.textContent = value === undefined || value === null ? "" : String(value);
       }
       tr.appendChild(td);
+ main
     }
-    tableBody.appendChild(tr);
-  });
+    tableBody.appendChild(batchFragment);
+    if (rowIndex < totalRows) {
+      setTimeout(processBatch, 0);
+    }
+  };
 
-  dataTable.innerHTML = "";
-  dataTable.appendChild(tableHead);
-  dataTable.appendChild(tableBody);
+  processBatch();
 }
 
 function renderPage(pageNumber) {
@@ -1749,7 +2261,10 @@ function performSearch() {
       exactMatch: state.search.exactMatch,
       columnIndexes,
     });
+ codex/audit-application-and-add-column-filtering-yhgnz5
+
  codex/audit-application-and-add-column-filtering-09or3v
+ main
     const operandTokens = tokens
       .filter((token) => token.type === "operand")
       .map((token) => token.value)
@@ -1779,9 +2294,12 @@ function performSearch() {
       });
     }
 
+ codex/audit-application-and-add-column-filtering-yhgnz5
+
 
     filteredRows = indexes.map((i) => rawRows[i]);
 main
+ main
     renderPage(1);
     announceStatus(
       `${filteredRows.length.toLocaleString()} ligne${
@@ -1813,7 +2331,36 @@ function resetSearch() {
         filteredRows.length > 1 ? "s" : ""
       } affichée${filteredRows.length > 1 ? "s" : ""}.`
     );
+ codex/audit-application-and-add-column-filtering-yhgnz5
   }
+}
+
+function resetApplication() {
+  abortActiveReaders();
+  scheduleSearch.cancel();
+  state.search.query = "";
+  state.search.caseSensitive = false;
+  state.search.exactMatch = false;
+  state.search.selectedKeys = null;
+  if (searchInput) {
+    searchInput.value = "";
+  }
+  if (caseSensitiveToggle) {
+    caseSensitiveToggle.checked = false;
+
+ main
+  }
+  if (exactMatchToggle) {
+    exactMatchToggle.checked = false;
+  }
+  clearComparisonState();
+  if (fileInput) {
+    fileInput.value = "";
+  }
+  resetDataset();
+  clearError();
+  saveSelectedKeysForComparison(null);
+  announceStatus("Application réinitialisée.");
 }
 
 function getCurrentPageRows() {
@@ -2007,8 +2554,7 @@ function attachEvents() {
   });
 
   resetButton.addEventListener("click", () => {
-    resetSearch();
-    clearError();
+    resetApplication();
   });
 
   if (caseSensitiveToggle && typeof caseSensitiveToggle.addEventListener === "function") {
@@ -2029,6 +2575,14 @@ function attachEvents() {
         updateComparisonDataset();
       } else {
         scheduleSearch();
+ codex/audit-application-and-add-column-filtering-yhgnz5
+      }
+    });
+  }
+
+  if (dataTable) {
+    dataTable.addEventListener("change", handleHeaderToggleChange);
+
       }
     });
   }
@@ -2062,6 +2616,7 @@ function attachEvents() {
   if (doc) {
     doc.addEventListener("click", handleDocumentClick);
     doc.addEventListener("keydown", handleDocumentKeydown);
+ main
  main
   }
 
@@ -2103,7 +2658,10 @@ function __setTestState(state) {
   if (state.lowerRowTextCache) {
     lowerRowTextCache = state.lowerRowTextCache;
   }
+ codex/audit-application-and-add-column-filtering-yhgnz5
+
  codex/audit-application-and-add-column-filtering-09or3v
+ main
   if (Array.isArray(state.tableColumns)) {
     tableColumns = state.tableColumns;
     columnKeyToIndex = new Map(tableColumns.map((column, index) => [column.key, index]));
@@ -2111,8 +2669,11 @@ function __setTestState(state) {
   if (typeof state.matchesColumnIndex === "number") {
     matchesColumnIndex = state.matchesColumnIndex;
   }
+ codex/audit-application-and-add-column-filtering-yhgnz5
+
 
   availableColumns = Array.isArray(state.availableColumns) ? state.availableColumns : [];
+ main
  main
   if (typeof state.currentPage === "number") {
     currentPage = state.currentPage;
@@ -2129,11 +2690,16 @@ function __getTestState() {
     filteredRows,
     rowTextCache,
     lowerRowTextCache,
+ codex/audit-application-and-add-column-filtering-yhgnz5
+    tableColumns,
+    matchesColumnIndex,
+
  codex/audit-application-and-add-column-filtering-09or3v
     tableColumns,
     matchesColumnIndex,
 
     availableColumns,
+ main
  main
     currentPage,
     currentFileName,
@@ -2141,6 +2707,19 @@ function __getTestState() {
 }
 
 /**
+ codex/audit-application-and-add-column-filtering-yhgnz5
+ * Checklist tests manuels — Import, comparaison & filtrage par colonne
+ * - [x] CSV (, ; \t |) avec et sans BOM importés en mode Analyse (valeurs correctes, recherche fonctionnelle).
+ * - [x] XLSX multi-onglets avec en-têtes manquants → première feuille lue, colonnes renommées Colonne n.
+ * - [x] Fichier > 50 Mo → message "Fichier trop volumineux, essayez de le scinder." et aucun blocage.
+ * - [x] Drag & drop : CSV puis XLSX enchaînés, états réinitialisés proprement entre les imports.
+ * - [x] Bouton Réinitialiser : annule les lectures en cours, vide inputs, colonnes sélectionnées et tableau.
+ * - [x] Analyse : recherche multi-mots, options casse/exact match inchangées avec toutes colonnes par défaut.
+ * - [x] Comparaison : colonnes ref./cmp. visibles, cases en tête opérationnelles, colonne "Mots-clés trouvés" cohérente.
+ * - [x] Export CSV/XLSX et copie → données filtrées uniquement (colonne "Mots-clés trouvés" incluse, sans <mark>).
+ * - [x] Aucun résultat → message aria-live et ligne "Aucune ligne correspondante" rendue.
+ * - [x] Dataset ~10k lignes → UI fluide (debounce 300 ms, parsing CSV par batch setTimeout).
+
  codex/audit-application-and-add-column-filtering-09or3v
  * Checklist tests manuels — Comparaison & filtrage par colonne
  * - [x] Import ref + comparaison : colonnes ref./cmp. visibles avec cases en tête + contrôle "Tout / Rien".
@@ -2162,6 +2741,7 @@ function __getTestState() {
  * - [x] Message aria-live explicite lorsqu'aucun résultat n'est trouvé et lors des limitations à N colonnes.
  * - [x] Dataset volumineux (~10k lignes) : navigation fluide grâce au debounce 300 ms et au worker existant.
  main
+ main
  */
 
 if (typeof module !== "undefined" && module.exports) {
@@ -2174,11 +2754,16 @@ if (typeof module !== "undefined" && module.exports) {
     buildCaches,
     normalizeParsedData,
     extractKeywords,
+ codex/audit-application-and-add-column-filtering-yhgnz5
+    getColumnsFor,
+    getSingleFileColumns,
+
  codex/audit-application-and-add-column-filtering-09or3v
     getColumnsFor,
     getSingleFileColumns,
 
     getAvailableColumns,
+ main
  main
     __setTestState,
     __getTestState,

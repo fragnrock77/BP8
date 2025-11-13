@@ -191,6 +191,41 @@ input[type="file"] {
   color: var(--text-muted);
 }
 
+.spinner {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+  color: var(--text-muted);
+}
+
+.spinner[hidden] {
+  display: none !important;
+}
+
+.spinner__icon {
+  width: 1.25rem;
+  height: 1.25rem;
+  border-radius: 50%;
+  border: 3px solid rgba(37, 99, 235, 0.25);
+  border-top-color: var(--accent);
+  animation: spinner-rotate 0.75s linear infinite;
+}
+
+.spinner__label {
+  font-weight: 600;
+  color: var(--text);
+}
+
+@keyframes spinner-rotate {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .error {
   margin-top: 0.75rem;
   color: var(--danger);
@@ -250,12 +285,17 @@ input[type="file"] {
   pointer-events: none;
 }
 
+ codex/audit-application-and-add-column-filtering-yhgnz5
+
  codex/audit-application-and-add-column-filtering-09or3v
+ main
 .column-filter__summary {
   margin: 0;
   font-size: 0.95rem;
   font-weight: 600;
   color: var(--text-muted);
+ codex/audit-application-and-add-column-filtering-yhgnz5
+
 
 .column-filter__toggle {
   width: 100%;
@@ -302,6 +342,7 @@ input[type="file"] {
   outline-offset: 2px;
   border-radius: 0.5rem;
   background: rgba(37, 99, 235, 0.1);
+ main
  main
 }
 

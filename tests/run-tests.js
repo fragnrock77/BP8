@@ -8,11 +8,16 @@ const {
   buildCaches,
   normalizeParsedData,
   extractKeywords,
+ codex/audit-application-and-add-column-filtering-yhgnz5
+  getColumnsFor,
+  getSingleFileColumns,
+
  codex/audit-application-and-add-column-filtering-09or3v
   getColumnsFor,
   getSingleFileColumns,
 
   getAvailableColumns,
+ main
  main
   __setTestState,
   __getTestState,
@@ -173,7 +178,10 @@ test('extractKeywords returns unique trimmed entries', () => {
 
 resetStateForTests();
 
+ codex/audit-application-and-add-column-filtering-yhgnz5
+
  codex/audit-application-and-add-column-filtering-09or3v
+ main
 test('getColumnsFor prefixes labels for comparison datasets', () => {
   const columns = getColumnsFor('ref', [['A', 'B', 'C']], []);
   assert.deepStrictEqual(columns.map((col) => col.label), [
@@ -189,6 +197,8 @@ test('getSingleFileColumns keeps display labels without prefixes', () => {
     ['Bob', '28'],
   ]);
   assert.deepStrictEqual(columns.map((col) => col.label), ['Nom', 'Âge']);
+ codex/audit-application-and-add-column-filtering-yhgnz5
+
 
 test('getAvailableColumns falls back to generated labels', () => {
   __setTestState({
@@ -206,6 +216,7 @@ test('getAvailableColumns falls back to generated labels', () => {
     'Colonne 2',
     'Colonne 3',
   ]);
+ main
  main
 });
 
