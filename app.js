@@ -1,4 +1,5 @@
 /**
+ codex/audit-application-and-add-column-filtering-fi4qse
  * Rapport de correctifs (IMPORT + COMPARAISON + FILTRAGE PAR COLONNE)
  * - Cause du bug d'import : l'initialisation ne se faisait que sur DOMContentLoaded ;
  *   quand la page chargeait le script après cet évènement, aucun écouteur n'était posé
@@ -16,6 +17,37 @@
  *   - Import ref + cmp en comparaison -> OK
  *   - Filtrage par colonne (cocher/décocher) -> OK
  *   - Mots-clés trouvés mis à jour -> OK
+
+ codex/audit-application-and-add-column-filtering-yhgnz5
+ * Rapport de correctifs Import — CSV/XLS(X)
+ * - Causes probables : lecture via FileReader non centralisée et dépendance PapaParse bloquant la lecture hors CDN.
+ * - Changements effectués : importAnyFile mutualise FileReader + SheetJS, parseur CSV maison (BOM, délimiteur auto) et spinner avec erreurs détaillées.
+ * - Limites : encodages non UTF-8 non détectés automatiquement ; seules les premières feuilles XLS(X) sont analysées.
+ * - Tests manuels : CSV (, ; \t |) avec BOM, XLSX multi-onglets, drag & drop, reset, analyse & comparaison avec filtres + export.
+ */
+/**
+
+ codex/audit-application-and-add-column-filtering-09or3v
+ main
+ * Rapport de modifications — Comparaison avec cases d'en-tête
+ * - Bugs corrigés : export limité aux résultats filtrés, réinitialisation sûre quand aucune colonne n'est cochée, nettoyage des états comparaison/ref.
+ * - Décisions techniques : modèle de colonnes unifié (`tableColumns` + clés ref./cmp.), colonne "Mots-clés trouvés" calculée depuis les opérandes et surbrillance <mark>.
+ * - Impact accessibilité : fieldset résumé, cases à cocher labellisées dans les th, aria-live pour limites de recherche et erreurs.
+ * - Performance : caches de cellules restreints aux colonnes recherchables, debounce 300 ms conservé, worker inchangé.
+ * - Tests : checklist manuelle actualisée (comparaison, export, 10k lignes) + suite automatisée mise à jour (colonnes ref./cmp.).
+ codex/audit-application-and-add-column-filtering-yhgnz5
+
+
+ * Rapport de modifications — Filtrage par colonne
+ * - Bugs corrigés : cache de recherche concaténé (faux positifs inter-colonnes) remplacé par un cache par cellule et annonces d'erreurs via aria-live pour éviter les silences en cas d'échec.
+ * - Changements UI : ajout d'un filtre multi-colonnes persistant avec bouton accessible et menu déroulant.
+ * - Implémentation : selectedColumns dans l'état global, getAvailableColumns, adaptation de matchRow/performSearch.
+ * - Accessibilité : fieldset/legend, aria-live dédié, focus visible dans le menu, annonces vocales des limites de recherche.
+ * - Performance : debounce 300 ms sur recherche/filtre, réduction des colonnes inspectées, worker conservé.
+ * - Tests manuels : checklist en fin de fichier (cas "Toutes", une colonne, multi, export, 10k lignes, options casse/exacte).
+ main
+ main
+ main
  */
 
 const doc = typeof document !== "undefined" ? document : null;
@@ -68,6 +100,21 @@ const copyButton = doc ? doc.getElementById("copy-button") : null;
 const exportCsvButton = doc ? doc.getElementById("export-csv-button") : null;
 const exportXlsxButton = doc ? doc.getElementById("export-xlsx-button") : null;
 const columnFilterFieldset = doc ? doc.getElementById("column-filter") : null;
+ codex/audit-application-and-add-column-filtering-fi4qse
+
+ codex/audit-application-and-add-column-filtering-yhgnz5
+
+ codex/audit-application-and-add-column-filtering-09or3v
+
+const columnFilterToggle = doc ? doc.getElementById("column-filter-toggle") : null;
+const columnFilterMenu = doc ? doc.getElementById("column-filter-menu") : null;
+const columnFilterOptionsContainer = doc
+  ? doc.getElementById("column-filter-options")
+  : null;
+const columnFilterAll = doc ? doc.getElementById("column-filter-all") : null;
+ main
+ main
+ main
 const columnFilterLabel = doc
   ? doc.getElementById("column-filter-label")
   : { textContent: "" };
@@ -76,6 +123,10 @@ const liveFeedback = doc ? doc.getElementById("live-feedback") : null;
 
 const PAGE_SIZE = 100;
 const SEARCH_DEBOUNCE = 300;
+ codex/audit-application-and-add-column-filtering-fi4qse
+
+ codex/audit-application-and-add-column-filtering-yhgnz5
+ main
 const RENDER_BATCH_SIZE = 200;
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
 
@@ -116,16 +167,119 @@ function debounce(fn, delay) {
 }
 
 const scheduleSearch = debounce(() => performSearch({ source: "debounce" }), SEARCH_DEBOUNCE);
+ codex/audit-application-and-add-column-filtering-fi4qse
+
+
+const MAX_FILE_SIZE = 200 * 1024 * 1024; // 200MB
+ main
+
+const STORAGE_KEYS = {
+ codex/audit-application-and-add-column-filtering-09or3v
+  selectedRef: "bp8.search.selectedColumns.ref",
+  selectedCmp: "bp8.search.selectedColumns.cmp",
+};
+
+
+  selectedColumns: "bp8.search.selectedColumns",
+};
+
+function loadSelectedColumns() {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  try {
+    const stored = window.localStorage.getItem(STORAGE_KEYS.selectedColumns);
+    if (!stored) {
+      return null;
+    }
+    const parsed = JSON.parse(stored);
+    if (!Array.isArray(parsed) || !parsed.length) {
+      return null;
+    }
+    return parsed.map((key) => String(key));
+  } catch (error) {
+    console.warn("Impossible de charger les colonnes persistées", error);
+    return null;
+  }
+}
+
+function saveSelectedColumns(columns) {
+  if (typeof window === "undefined") {
+    return;
+  }
+  try {
+    if (!columns || !columns.length) {
+      window.localStorage.removeItem(STORAGE_KEYS.selectedColumns);
+      return;
+    }
+    window.localStorage.setItem(STORAGE_KEYS.selectedColumns, JSON.stringify(columns));
+  } catch (error) {
+    console.warn("Impossible de persister les colonnes sélectionnées", error);
+  }
+}
+
+ main
+const state = {
+  search: {
+    query: "",
+    caseSensitive: false,
+    exactMatch: false,
+ codex/audit-application-and-add-column-filtering-09or3v
+    selectedKeys: null,
+
+    selectedColumns: loadSelectedColumns(),
+ main
+  },
+};
+
+function debounce(fn, delay) {
+  let timerId = null;
+  function debounced(...args) {
+    if (timerId) {
+      clearTimeout(timerId);
+    }
+    timerId = setTimeout(() => {
+      timerId = null;
+      fn.apply(this, args);
+    }, delay);
+  }
+  debounced.cancel = () => {
+    if (timerId) {
+      clearTimeout(timerId);
+      timerId = null;
+    }
+  };
+  return debounced;
+}
+
+const scheduleSearch = debounce(() => performSearch({ source: "debounce" }), SEARCH_DEBOUNCE);
+ main
 
 let headers = [];
 let rawRows = [];
 let filteredRows = [];
 let rowTextCache = [];
 let lowerRowTextCache = [];
+ codex/audit-application-and-add-column-filtering-fi4qse
+
+ codex/audit-application-and-add-column-filtering-yhgnz5
+
+ codex/audit-application-and-add-column-filtering-09or3v
+ main
+ main
 let tableColumns = [];
 let columnKeyToIndex = new Map();
 let filteredRowHighlights = [];
 let matchesColumnIndex = -1;
+ codex/audit-application-and-add-column-filtering-fi4qse
+
+ codex/audit-application-and-add-column-filtering-yhgnz5
+
+
+let availableColumns = [];
+ main
+ main
+ main
 let currentPage = 1;
 let currentFileName = "";
 let currentMode = "single";
@@ -147,11 +301,27 @@ function resetDataset(options = {}) {
   filteredRows = [];
   rowTextCache = [];
   lowerRowTextCache = [];
+ codex/audit-application-and-add-column-filtering-fi4qse
+
+ codex/audit-application-and-add-column-filtering-yhgnz5
+
+ codex/audit-application-and-add-column-filtering-09or3v
+ main
+ main
   tableColumns = [];
   columnKeyToIndex = new Map();
   filteredRowHighlights = [];
   matchesColumnIndex = -1;
   state.search.selectedKeys = null;
+ codex/audit-application-and-add-column-filtering-fi4qse
+
+ codex/audit-application-and-add-column-filtering-yhgnz5
+
+
+  availableColumns = [];
+ main
+ main
+ main
   currentPage = 1;
   currentFileName = "";
   updateProgress(0, "");
@@ -163,9 +333,30 @@ function resetDataset(options = {}) {
     dataTable.innerHTML = "";
   }
   resultStats.textContent = "";
+ codex/audit-application-and-add-column-filtering-fi4qse
   setColumnFilterInteractivity(true);
   updateSearchSummary();
   announceColumnSelection();
+
+ codex/audit-application-and-add-column-filtering-yhgnz5
+  setColumnFilterInteractivity(true);
+  updateSearchSummary();
+  announceColumnSelection();
+ codex/audit-application-and-add-column-filtering-09or3v
+  setColumnFilterInteractivity(true);
+  updateSearchSummary();
+  announceColumnSelection();
+
+  rebuildColumnFilterOptions();
+ main
+}
+
+function announceStatus(message) {
+  if (liveFeedback) {
+    liveFeedback.textContent = message || "";
+  }
+ main
+ main
 }
 
 function announceStatus(message) {
@@ -180,7 +371,15 @@ function showError(message, detail = "") {
     errorMessage.textContent = combined;
     errorMessage.hidden = false;
   }
+ codex/audit-application-and-add-column-filtering-fi4qse
   announceStatus(combined);
+
+ codex/audit-application-and-add-column-filtering-yhgnz5
+  announceStatus(combined);
+
+  announceStatus(message);
+ main
+ main
 }
 
 function clearError() {
@@ -254,6 +453,13 @@ function sanitizeColumnLabel(header, index) {
   return String(header);
 }
 
+ codex/audit-application-and-add-column-filtering-fi4qse
+
+ codex/audit-application-and-add-column-filtering-yhgnz5
+
+ codex/audit-application-and-add-column-filtering-09or3v
+ main
+ main
 function buildColumns(headers, rows, { prefix, origin }) {
   const firstRow = Array.isArray(rows) && rows.length ? rows[0] : [];
   const columnCount = Math.max(headers.length, firstRow.length);
@@ -293,6 +499,14 @@ function getSingleFileColumns(headers, rows) {
   );
 }
 
+ codex/audit-application-and-add-column-filtering-fi4qse
+
+ codex/audit-application-and-add-column-filtering-yhgnz5
+
+
+ main
+ main
+ main
 function getAvailableColumns(rows = rawRows) {
   const firstRow = Array.isArray(rows) && rows.length ? rows[0] : [];
   const totalColumns = Math.max(headers.length, firstRow.length);
@@ -306,6 +520,13 @@ function getAvailableColumns(rows = rawRows) {
   return detected;
 }
 
+ codex/audit-application-and-add-column-filtering-fi4qse
+
+ codex/audit-application-and-add-column-filtering-yhgnz5
+
+ codex/audit-application-and-add-column-filtering-09or3v
+ main
+ main
 function loadSelectedKeysForComparison() {
   if (typeof window === "undefined") {
     return null;
@@ -457,6 +678,177 @@ function syncSelectedKeysWithColumns({ loadStored = false } = {}) {
 function getDefaultColumnIndexes() {
   if (tableColumns.length) {
     return tableColumns.map((_, index) => index);
+ codex/audit-application-and-add-column-filtering-fi4qse
+
+ codex/audit-application-and-add-column-filtering-yhgnz5
+
+
+function syncSelectedColumnsWithAvailable() {
+  if (!state.search.selectedColumns || !state.search.selectedColumns.length) {
+    state.search.selectedColumns = null;
+    return;
+  }
+  const availableKeys = new Set(availableColumns.map((column) => column.key));
+  const filtered = state.search.selectedColumns.filter((key) => availableKeys.has(key));
+  state.search.selectedColumns = filtered.length ? filtered : null;
+}
+
+function closeColumnFilterMenu() {
+  if (!columnFilterMenu || !columnFilterToggle) {
+    return;
+  }
+  columnFilterMenu.hidden = true;
+  columnFilterToggle.setAttribute("aria-expanded", "false");
+}
+
+function openColumnFilterMenu() {
+  if (
+    !columnFilterMenu ||
+    !columnFilterToggle ||
+    (columnFilterFieldset && columnFilterFieldset.disabled)
+  ) {
+    return;
+  }
+  columnFilterMenu.hidden = false;
+  columnFilterToggle.setAttribute("aria-expanded", "true");
+  const firstInput = columnFilterMenu.querySelector('input[type="checkbox"]');
+  if (firstInput) {
+    firstInput.focus({ preventScroll: true });
+  }
+}
+
+function toggleColumnFilterMenu(force) {
+  if (!columnFilterMenu || !columnFilterToggle) {
+    return;
+  }
+  const isOpen = !columnFilterMenu.hidden;
+  if (force === true) {
+    if (!isOpen) {
+      openColumnFilterMenu();
+    }
+    return;
+  }
+  if (force === false) {
+    if (isOpen) {
+      closeColumnFilterMenu();
+    }
+    return;
+  }
+  if (isOpen) {
+    closeColumnFilterMenu();
+  } else {
+    openColumnFilterMenu();
+  }
+}
+
+function setColumnFilterDisabled(disabled) {
+  if (!columnFilterFieldset) {
+    return;
+  }
+  columnFilterFieldset.disabled = Boolean(disabled);
+  if (columnFilterToggle) {
+    columnFilterToggle.setAttribute("aria-disabled", String(Boolean(disabled)));
+  }
+  if (disabled) {
+    closeColumnFilterMenu();
+  }
+}
+
+function updateColumnFilterLabel() {
+  if (!columnFilterLabel) {
+    return;
+  }
+  if (!availableColumns.length) {
+    columnFilterLabel.textContent = "Colonnes : Toutes";
+    return;
+  }
+  if (!state.search.selectedColumns || !state.search.selectedColumns.length) {
+    columnFilterLabel.textContent = "Colonnes : Toutes";
+    return;
+  }
+  const selectedLabels = availableColumns
+    .filter((column) => state.search.selectedColumns.includes(column.key))
+    .map((column) => column.label);
+  if (!selectedLabels.length) {
+    columnFilterLabel.textContent = "Colonnes : Toutes";
+    return;
+  }
+  const preview = selectedLabels.slice(0, 3).join(", ");
+  const remaining = selectedLabels.length > 3 ? ` +${selectedLabels.length - 3}` : "";
+  columnFilterLabel.textContent = `Colonnes : ${preview}${remaining}`;
+}
+
+function announceColumnSelection() {
+  if (!columnFilterLive) {
+    return;
+  }
+  if (!availableColumns.length) {
+    columnFilterLive.textContent = "Recherche sur toutes les colonnes.";
+    return;
+  }
+  if (!state.search.selectedColumns || !state.search.selectedColumns.length) {
+    columnFilterLive.textContent = "Recherche sur toutes les colonnes.";
+    return;
+  }
+  const count = state.search.selectedColumns.length;
+  columnFilterLive.textContent = `Recherche limitée à ${count} colonne${count > 1 ? "s" : ""}.`;
+}
+
+function rebuildColumnFilterOptions() {
+  if (!doc || !columnFilterOptionsContainer || !columnFilterAll) {
+    return;
+  }
+  closeColumnFilterMenu();
+  columnFilterOptionsContainer.innerHTML = "";
+  if (!availableColumns.length) {
+    columnFilterAll.checked = true;
+    setColumnFilterDisabled(true);
+    updateColumnFilterLabel();
+    announceColumnSelection();
+    return;
+  }
+
+  setColumnFilterDisabled(false);
+  const fragment = doc.createDocumentFragment();
+  availableColumns.forEach((column) => {
+    const optionLabel = doc.createElement("label");
+    optionLabel.className = "checkbox column-filter__option";
+    const input = doc.createElement("input");
+    input.type = "checkbox";
+    input.dataset.columnKey = column.key;
+    input.id = `column-filter-${column.key}`;
+    input.checked = Boolean(
+      state.search.selectedColumns && state.search.selectedColumns.includes(column.key)
+    );
+    optionLabel.appendChild(input);
+    optionLabel.appendChild(doc.createTextNode(column.label));
+    fragment.appendChild(optionLabel);
+  });
+
+  columnFilterOptionsContainer.appendChild(fragment);
+  const hasSelection = Boolean(state.search.selectedColumns && state.search.selectedColumns.length);
+  columnFilterAll.checked = !hasSelection;
+  updateColumnFilterLabel();
+  announceColumnSelection();
+}
+
+function updateAvailableColumns() {
+  availableColumns = getAvailableColumns(rawRows);
+  syncSelectedColumnsWithAvailable();
+  if (!state.search.selectedColumns || !state.search.selectedColumns.length) {
+    saveSelectedColumns(null);
+  } else {
+    saveSelectedColumns(state.search.selectedColumns);
+  }
+  rebuildColumnFilterOptions();
+}
+
+function getDefaultColumnIndexes() {
+  if (availableColumns.length) {
+    return availableColumns.map((column) => Number(column.key));
+ main
+ main
+ main
   }
   const candidateLength = Math.max(headers.length, rawRows[0]?.length || 0);
   if (!candidateLength) {
@@ -466,6 +858,13 @@ function getDefaultColumnIndexes() {
 }
 
 function getColumnIndexesForSearch() {
+ codex/audit-application-and-add-column-filtering-fi4qse
+
+ codex/audit-application-and-add-column-filtering-yhgnz5
+
+ codex/audit-application-and-add-column-filtering-09or3v
+ main
+ main
   if (!state.search.selectedKeys || !state.search.selectedKeys.size) {
     return getDefaultColumnIndexes();
   }
@@ -561,6 +960,103 @@ function handleHeaderToggleChange(event) {
     return;
   }
   handleColumnToggle(target, target.checked);
+ codex/audit-application-and-add-column-filtering-fi4qse
+
+ codex/audit-application-and-add-column-filtering-yhgnz5
+
+
+  if (!state.search.selectedColumns || !state.search.selectedColumns.length) {
+    return getDefaultColumnIndexes();
+  }
+  const availableMap = new Map(
+    availableColumns.map((column) => [column.key, Number(column.key)])
+  );
+  const indexes = state.search.selectedColumns
+    .map((key) => availableMap.get(key))
+    .filter((value) => typeof value === "number" && Number.isFinite(value));
+  return indexes.length ? indexes : getDefaultColumnIndexes();
+}
+
+function handleColumnFilterAllChange() {
+  if (!columnFilterAll) {
+    return;
+  }
+  if (!columnFilterAll.checked) {
+    if (!state.search.selectedColumns || !state.search.selectedColumns.length) {
+      columnFilterAll.checked = true;
+    }
+    return;
+  }
+  state.search.selectedColumns = null;
+  saveSelectedColumns(null);
+  if (columnFilterOptionsContainer) {
+    const inputs = columnFilterOptionsContainer.querySelectorAll('input[type="checkbox"]');
+    inputs.forEach((input) => {
+      input.checked = false;
+    });
+  }
+  updateColumnFilterLabel();
+  announceColumnSelection();
+  scheduleSearch();
+}
+
+function handleColumnFilterOptionChange(event) {
+  const target = event.target;
+  if (!target || target.tagName !== "INPUT" || target.type !== "checkbox") {
+    return;
+  }
+  const { columnKey } = target.dataset;
+  if (!columnKey) {
+    return;
+  }
+  const selection = new Set(state.search.selectedColumns || []);
+  if (target.checked) {
+    selection.add(columnKey);
+  } else {
+    selection.delete(columnKey);
+  }
+  if (!selection.size) {
+    state.search.selectedColumns = null;
+    columnFilterAll.checked = true;
+    saveSelectedColumns(null);
+  } else {
+    const ordered = availableColumns
+      .map((column) => column.key)
+      .filter((key) => selection.has(key));
+    state.search.selectedColumns = ordered;
+    columnFilterAll.checked = false;
+    saveSelectedColumns(state.search.selectedColumns);
+  }
+  updateColumnFilterLabel();
+  announceColumnSelection();
+  scheduleSearch();
+}
+
+function handleDocumentClick(event) {
+  if (!columnFilterFieldset || !columnFilterMenu || columnFilterMenu.hidden) {
+    return;
+  }
+  if (columnFilterFieldset.contains(event.target)) {
+    return;
+  }
+  closeColumnFilterMenu();
+}
+
+function handleDocumentKeydown(event) {
+  if (event.key !== "Escape") {
+    return;
+  }
+  if (!columnFilterMenu || columnFilterMenu.hidden) {
+    return;
+  }
+  event.preventDefault();
+  closeColumnFilterMenu();
+  if (columnFilterToggle) {
+    columnFilterToggle.focus({ preventScroll: true });
+  }
+ main
+ main
+ main
 }
 
 function clearComparisonState() {
@@ -730,11 +1226,27 @@ function applyDataset({ columns, rows, fileName, includeMatchesColumn = false, l
   filteredRows = rawRows.map((row) => row.slice());
   filteredRowHighlights = filteredRows.map(() => new Array(headers.length).fill(null));
   buildCaches();
+ codex/audit-application-and-add-column-filtering-fi4qse
+
+ codex/audit-application-and-add-column-filtering-yhgnz5
+
+ codex/audit-application-and-add-column-filtering-09or3v
+ main
+ main
   syncSelectedKeysWithColumns({ loadStored });
   if (currentMode === "compare") {
     saveSelectedKeysForComparison(state.search.selectedKeys);
   }
 
+ codex/audit-application-and-add-column-filtering-fi4qse
+
+ codex/audit-application-and-add-column-filtering-yhgnz5
+
+
+  updateAvailableColumns();
+ main
+ main
+ main
   currentFileName = fileName || "";
   controlsSection.hidden = false;
   resultsSection.hidden = false;
@@ -748,6 +1260,10 @@ function applyDataset({ columns, rows, fileName, includeMatchesColumn = false, l
       } affichée${filteredRows.length > 1 ? "s" : ""}.`
     );
   }
+ codex/audit-application-and-add-column-filtering-fi4qse
+
+ codex/audit-application-and-add-column-filtering-yhgnz5
+ main
 }
 
 function getExt(fileName) {
@@ -845,6 +1361,7 @@ function detectDelimiter(text) {
     }
   });
   return bestScore <= 0 ? "," : bestDelimiter;
+ codex/audit-application-and-add-column-filtering-fi4qse
 }
 
 function parseCSV(text, { onProgress } = {}) {
@@ -999,12 +1516,171 @@ function parseXLSX(arrayBuffer, { onProgress } = {}) {
   return { headers, rows: objects };
 }
 
+
+}
+
+function parseCSV(text, { onProgress } = {}) {
+  return new Promise((resolve, reject) => {
+    try {
+      if (!text) {
+        resolve({ headers: [], rows: [] });
+        return;
+      }
+      const content = stripBom(text);
+      const delimiter = detectDelimiter(content);
+      const rows = [];
+      let row = [];
+      let field = "";
+      let inQuotes = false;
+      let index = 0;
+      const length = content.length;
+      const chunkSize = 200000;
+
+      const commitRow = () => {
+        const shouldKeep = rows.length === 0 || row.some((value) => value !== "");
+        if (shouldKeep) {
+          rows.push(row.slice());
+        }
+        row = [];
+      };
+
+      const pushField = () => {
+        row.push(field);
+        field = "";
+      };
+
+      const processChunk = () => {
+        const limit = Math.min(index + chunkSize, length);
+        while (index < limit) {
+          const char = content[index];
+          if (char === '"') {
+            if (inQuotes) {
+              if (content[index + 1] === '"') {
+                field += '"';
+                index += 1;
+              } else {
+                inQuotes = false;
+              }
+            } else {
+              inQuotes = true;
+            }
+            index += 1;
+            continue;
+          }
+
+          if (!inQuotes && char === delimiter) {
+            pushField();
+            index += 1;
+            continue;
+          }
+
+          if (!inQuotes && (char === "\n" || char === "\r")) {
+            if (char === "\r" && content[index + 1] === "\n") {
+              index += 1;
+            }
+            pushField();
+            commitRow();
+            index += 1;
+            continue;
+          }
+
+          field += char;
+          index += 1;
+        }
+
+        if (index < length) {
+          if (typeof onProgress === "function") {
+            const percent = 60 + Math.min(38, Math.round((index / length) * 38));
+            const label = `${rows.length.toLocaleString()} lignes analysées`;
+            onProgress(percent, label);
+          }
+          setTimeout(processChunk, 0);
+        } else {
+          pushField();
+          if (row.length && row.some((value) => value !== "")) {
+            commitRow();
+          } else if (rows.length === 0) {
+            commitRow();
+          } else {
+            row = [];
+          }
+
+          const [headerRow = [], ...dataRows] = rows;
+          if (headerRow.length === 0 && dataRows.length === 0) {
+            resolve({ headers: [], rows: [] });
+            return;
+          }
+
+          const headers = normalizeHeaders(headerRow);
+          const filteredRows = dataRows.filter((cells) =>
+            Array.isArray(cells) ? cells.some((value) => value !== "") : false
+          );
+          const objects = filteredRows.map((cells) => {
+            const entry = {};
+            headers.forEach((header, columnIndex) => {
+              entry[header] = sanitizeValue(cells[columnIndex]);
+            });
+            return entry;
+          });
+          resolve({ headers, rows: objects });
+        }
+      };
+
+      processChunk();
+    } catch (error) {
+      reject(error);
+    }
+  });
+
+ main
+}
+
+function parseXLSX(arrayBuffer, { onProgress } = {}) {
+  if (typeof XLSX === "undefined") {
+    throw new Error("La bibliothèque XLSX est indisponible.");
+  }
+  if (typeof onProgress === "function") {
+    onProgress(75, "Analyse du classeur...");
+  }
+  const workbook = XLSX.read(arrayBuffer, { type: "array", dense: true });
+  const sheetName = workbook.SheetNames[0];
+  if (!sheetName) {
+    return { headers: [], rows: [] };
+  }
+  if (typeof onProgress === "function") {
+    onProgress(85, `Lecture de la feuille ${sheetName}`);
+  }
+  const sheet = workbook.Sheets[sheetName];
+  const sheetData = XLSX.utils.sheet_to_json(sheet, {
+    header: 1,
+    blankrows: false,
+    defval: "",
+  });
+  const [headerRow = [], ...dataRows] = sheetData;
+  if (!headerRow.length && !dataRows.length) {
+    return { headers: [], rows: [] };
+  }
+  const headers = normalizeHeaders(headerRow);
+  const objects = dataRows
+    .map((cells) => {
+      const entry = {};
+      headers.forEach((header, columnIndex) => {
+        entry[header] = sanitizeValue(cells?.[columnIndex]);
+      });
+      return entry;
+    })
+    .filter((entry) => headers.some((header) => entry[header] !== ""));
+  return { headers, rows: objects };
+}
+
+ main
 async function importAnyFile(file, { onProgress } = {}) {
   if (!file) {
     throw new Error("Aucun fichier fourni.");
   }
   if (file.size > MAX_FILE_SIZE) {
     throw new Error("Fichier trop volumineux, essayez de le scinder.");
+ codex/audit-application-and-add-column-filtering-fi4qse
   }
   const extension = getExt(file.name);
   if (extension === "unknown") {
@@ -1016,6 +1692,17 @@ async function importAnyFile(file, { onProgress } = {}) {
   if (typeof onProgress === "function") {
     onProgress(1, `Lecture de ${file.name} (${formatBytes(file.size)})`);
   }
+
+  }
+  const extension = getExt(file.name);
+  if (extension === "unknown") {
+    throw new Error("Format non supporté. Choisissez un CSV, XLS ou XLSX.");
+  }
+
+  if (typeof onProgress === "function") {
+    onProgress(1, `Lecture de ${file.name} (${formatBytes(file.size)})`);
+  }
+ main
 
   const content = await readFileContent(file, { ext: extension, onProgress });
 
@@ -1047,9 +1734,30 @@ function updateComparisonDataset() {
     return;
   }
 
+ codex/audit-application-and-add-column-filtering-fi4qse
   const refColumns = getColumnsFor("ref", referenceRows, referenceHeaders);
   const cmpColumns = getColumnsFor("cmp", comparisonRows, comparisonHeaders);
   const columns = [...refColumns, ...cmpColumns];
+
+ codex/audit-application-and-add-column-filtering-yhgnz5
+  const refColumns = getColumnsFor("ref", referenceRows, referenceHeaders);
+  const cmpColumns = getColumnsFor("cmp", comparisonRows, comparisonHeaders);
+  const columns = [...refColumns, ...cmpColumns];
+
+ codex/audit-application-and-add-column-filtering-09or3v
+  const refColumns = getColumnsFor("ref", referenceRows, referenceHeaders);
+  const cmpColumns = getColumnsFor("cmp", comparisonRows, comparisonHeaders);
+  const columns = [...refColumns, ...cmpColumns];
+
+  const options = {
+    caseSensitive: Boolean(caseSensitiveToggle.checked),
+    exactMatch: Boolean(exactMatchToggle.checked),
+  };
+  state.search.caseSensitive = options.caseSensitive;
+  state.search.exactMatch = options.exactMatch;
+ main
+ main
+ main
 
   if (!columns.length) {
     resetDataset();
@@ -1064,10 +1772,24 @@ function updateComparisonDataset() {
     const values = [];
     refColumns.forEach((column) => {
       values.push(sanitizeValue(refRow[column.index]));
+ codex/audit-application-and-add-column-filtering-fi4qse
     });
     cmpColumns.forEach((column) => {
       values.push(sanitizeValue(cmpRow[column.index]));
     });
+
+ codex/audit-application-and-add-column-filtering-yhgnz5
+    });
+    cmpColumns.forEach((column) => {
+      values.push(sanitizeValue(cmpRow[column.index]));
+    });
+
+    });
+    cmpColumns.forEach((column) => {
+      values.push(sanitizeValue(cmpRow[column.index]));
+    });
+ main
+main
     return values;
   });
 
@@ -1121,8 +1843,15 @@ async function handleSingleFile(files) {
       includeMatchesColumn: false,
       loadStored: false,
     });
+ codex/audit-application-and-add-column-filtering-fi4qse
     console.log("[IMPORT] Import terminé pour le mode analyse");
     finalLabel = "Chargement terminé";
+
+ codex/audit-application-and-add-column-filtering-yhgnz5
+    finalLabel = "Chargement terminé";
+
+ main
+ main
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") {
       finalLabel = "Chargement annulé";
@@ -1153,10 +1882,21 @@ async function handleReferenceFiles(files) {
   referenceFileName = file.name.replace(/\.[^.]+$/, "");
   let finalLabel;
   try {
+ codex/audit-application-and-add-column-filtering-fi4qse
+
+ codex/audit-application-and-add-column-filtering-yhgnz5
+ main
     setLoading(true, `Lecture de ${file.name} (${formatBytes(file.size)})`);
     const parsed = await importAnyFile(file, {
       onProgress: (percent, label) => updateProgress(percent, label),
     });
+ codex/audit-application-and-add-column-filtering-fi4qse
+
+
+    const parsed =
+      extension === "csv" ? await parseCsv(file) : await parseXlsx(file);
+ main
+ main
     const { headers: parsedHeaders, rows } = normalizeParsedData(parsed);
     referenceHeaders = parsedHeaders;
     referenceRows = rows;
@@ -1175,8 +1915,18 @@ async function handleReferenceFiles(files) {
     updateReferenceSummary();
 
     if (!comparisonHeaders.length && !comparisonRows.length) {
+ codex/audit-application-and-add-column-filtering-fi4qse
       resetDataset({ keepSpinner: true });
       finalLabel = "Fichier de référence chargé";
+
+ codex/audit-application-and-add-column-filtering-yhgnz5
+      resetDataset({ keepSpinner: true });
+      finalLabel = "Fichier de référence chargé";
+
+      resetDataset();
+      updateProgress(100, "Fichier de référence chargé");
+ main
+ main
     } else {
       updateComparisonDataset();
       finalLabel = "Comparaison terminée";
@@ -1219,7 +1969,15 @@ async function handleComparisonFiles(files) {
     if (!rows.length) {
       comparisonHeaders = [];
       comparisonRows = [];
+ codex/audit-application-and-add-column-filtering-fi4qse
       resetDataset({ keepSpinner: true });
+
+ codex/audit-application-and-add-column-filtering-yhgnz5
+      resetDataset({ keepSpinner: true });
+
+      resetDataset();
+ main
+ main
       showError("Aucune donnée trouvée dans le fichier à comparer.");
       finalLabel = "Chargement terminé";
       return;
@@ -1229,8 +1987,18 @@ async function handleComparisonFiles(files) {
     comparisonRows = rows;
 
     if (!referenceHeaders.length && !referenceRows.length) {
+ codex/audit-application-and-add-column-filtering-fi4qse
       resetDataset({ keepSpinner: true });
       finalLabel = "Fichier à comparer chargé";
+
+ codex/audit-application-and-add-column-filtering-yhgnz5
+      resetDataset({ keepSpinner: true });
+      finalLabel = "Fichier à comparer chargé";
+
+      resetDataset();
+      updateProgress(100, "Fichier à comparer chargé");
+ main
+ main
     } else {
       updateComparisonDataset();
       finalLabel = "Comparaison terminée";
@@ -1272,10 +2040,26 @@ async function handleCompareDrop(files) {
 }
 
 function buildCaches() {
+ codex/audit-application-and-add-column-filtering-fi4qse
+
+ codex/audit-application-and-add-column-filtering-yhgnz5
+
+ codex/audit-application-and-add-column-filtering-09or3v
+ main
+ main
   const searchColumnCount = tableColumns.length || Math.max(headers.length, 0);
   rowTextCache = rawRows.map((row) =>
     Array.from({ length: searchColumnCount }, (_, index) => sanitizeValue(row?.[index]))
   );
+ codex/audit-application-and-add-column-filtering-fi4qse
+
+ codex/audit-application-and-add-column-filtering-yhgnz5
+
+
+  rowTextCache = rawRows.map((row) => row.map((value) => sanitizeValue(value)));
+ main
+ main
+ main
   lowerRowTextCache = rowTextCache.map((cells) => cells.map((cell) => cell.toLowerCase()));
 }
 
@@ -1367,6 +2151,10 @@ function renderTable(rows, { highlights = [] } = {}) {
   tableHead.appendChild(headerRow);
 
   const tableBody = doc.createElement("tbody");
+ codex/audit-application-and-add-column-filtering-fi4qse
+
+ codex/audit-application-and-add-column-filtering-yhgnz5
+ main
   dataTable.innerHTML = "";
   const fragment = doc.createDocumentFragment();
   fragment.appendChild(tableHead);
@@ -1401,6 +2189,27 @@ function renderTable(rows, { highlights = [] } = {}) {
         tr.appendChild(td);
       }
       batchFragment.appendChild(tr);
+ codex/audit-application-and-add-column-filtering-fi4qse
+
+
+  rows.forEach((row, rowIndex) => {
+    const tr = doc.createElement("tr");
+    const rowHighlight = highlights[rowIndex] || [];
+    for (let index = 0; index < headers.length; index += 1) {
+      const td = doc.createElement("td");
+      if (matchesColumnIndex >= 0 && index === matchesColumnIndex) {
+        td.classList.add("matches-cell");
+      }
+      const highlightContent = rowHighlight[index];
+      if (highlightContent) {
+        td.innerHTML = highlightContent;
+      } else {
+        const value = row?.[index];
+        td.textContent = value === undefined || value === null ? "" : String(value);
+      }
+      tr.appendChild(td);
+ main
+ main
     }
     tableBody.appendChild(batchFragment);
     if (rowIndex < totalRows) {
@@ -1754,6 +2563,13 @@ function performSearch() {
       exactMatch: state.search.exactMatch,
       columnIndexes,
     });
+ codex/audit-application-and-add-column-filtering-fi4qse
+
+ codex/audit-application-and-add-column-filtering-yhgnz5
+
+ codex/audit-application-and-add-column-filtering-09or3v
+ main
+ main
     const operandTokens = tokens
       .filter((token) => token.type === "operand")
       .map((token) => token.value)
@@ -1783,6 +2599,15 @@ function performSearch() {
       });
     }
 
+ codex/audit-application-and-add-column-filtering-fi4qse
+
+ codex/audit-application-and-add-column-filtering-yhgnz5
+
+
+    filteredRows = indexes.map((i) => rawRows[i]);
+main
+ main
+ main
     renderPage(1);
     announceStatus(
       `${filteredRows.length.toLocaleString()} ligne${
@@ -1814,6 +2639,10 @@ function resetSearch() {
         filteredRows.length > 1 ? "s" : ""
       } affichée${filteredRows.length > 1 ? "s" : ""}.`
     );
+ codex/audit-application-and-add-column-filtering-fi4qse
+
+ codex/audit-application-and-add-column-filtering-yhgnz5
+ main
   }
 }
 
@@ -1829,6 +2658,7 @@ function resetApplication() {
   }
   if (caseSensitiveToggle) {
     caseSensitiveToggle.checked = false;
+ codex/audit-application-and-add-column-filtering-fi4qse
   }
   if (exactMatchToggle) {
     exactMatchToggle.checked = false;
@@ -1837,6 +2667,18 @@ function resetApplication() {
   if (fileInput) {
     fileInput.value = "";
   }
+
+
+ main
+  }
+  if (exactMatchToggle) {
+    exactMatchToggle.checked = false;
+  }
+  clearComparisonState();
+  if (fileInput) {
+    fileInput.value = "";
+  }
+ main
   resetDataset();
   clearError();
   saveSelectedKeysForComparison(null);
@@ -2020,8 +2862,21 @@ function attachEvents() {
     });
   }
 
+ codex/audit-application-and-add-column-filtering-fi4qse
   if (searchButton) {
     searchButton.addEventListener("click", () => {
+
+  searchButton.addEventListener("click", () => {
+    scheduleSearch.cancel();
+    performSearch();
+  });
+  searchInput.addEventListener("input", () => {
+    scheduleSearch();
+  });
+  searchInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+ main
       scheduleSearch.cancel();
       performSearch();
     });
@@ -2039,11 +2894,17 @@ function attachEvents() {
     });
   }
 
+ codex/audit-application-and-add-column-filtering-fi4qse
   if (resetButton) {
     resetButton.addEventListener("click", () => {
       resetApplication();
     });
   }
+
+  resetButton.addEventListener("click", () => {
+    resetApplication();
+  });
+ main
 
   if (caseSensitiveToggle && typeof caseSensitiveToggle.addEventListener === "function") {
     caseSensitiveToggle.addEventListener("change", () => {
@@ -2063,6 +2924,7 @@ function attachEvents() {
         updateComparisonDataset();
       } else {
         scheduleSearch();
+ codex/audit-application-and-add-column-filtering-fi4qse
       }
     });
   }
@@ -2070,6 +2932,58 @@ function attachEvents() {
   if (dataTable) {
     dataTable.addEventListener("change", handleHeaderToggleChange);
   }
+
+ codex/audit-application-and-add-column-filtering-yhgnz5
+      }
+    });
+  }
+
+  if (dataTable) {
+    dataTable.addEventListener("change", handleHeaderToggleChange);
+
+      }
+    });
+  }
+
+ codex/audit-application-and-add-column-filtering-09or3v
+  if (dataTable) {
+    dataTable.addEventListener("change", handleHeaderToggleChange);
+  if (columnFilterToggle) {
+    columnFilterToggle.addEventListener("click", () => {
+      toggleColumnFilterMenu();
+    });
+    columnFilterToggle.addEventListener("keydown", (event) => {
+      if (event.key === " " || event.key === "Enter" || event.key === "ArrowDown") {
+        event.preventDefault();
+        toggleColumnFilterMenu(true);
+      }
+      if (event.key === "Escape") {
+        toggleColumnFilterMenu(false);
+      }
+    });
+  }
+
+  if (columnFilterAll) {
+    columnFilterAll.addEventListener("change", handleColumnFilterAllChange);
+  }
+
+  if (columnFilterOptionsContainer) {
+    columnFilterOptionsContainer.addEventListener("change", handleColumnFilterOptionChange);
+  }
+
+  if (doc) {
+    doc.addEventListener("click", handleDocumentClick);
+    doc.addEventListener("keydown", handleDocumentKeydown);
+ main
+ main
+  }
+
+  prevPageBtn.addEventListener("click", () => {
+    if (currentPage > 1) {
+      renderPage(currentPage - 1);
+    }
+  });
+ main
 
   if (prevPageBtn && typeof prevPageBtn.addEventListener === "function") {
     prevPageBtn.addEventListener("click", () => {
@@ -2123,6 +3037,13 @@ function __setTestState(state) {
   if (state.lowerRowTextCache) {
     lowerRowTextCache = state.lowerRowTextCache;
   }
+ codex/audit-application-and-add-column-filtering-fi4qse
+
+ codex/audit-application-and-add-column-filtering-yhgnz5
+
+ codex/audit-application-and-add-column-filtering-09or3v
+ main
+ main
   if (Array.isArray(state.tableColumns)) {
     tableColumns = state.tableColumns;
     columnKeyToIndex = new Map(tableColumns.map((column, index) => [column.key, index]));
@@ -2130,6 +3051,15 @@ function __setTestState(state) {
   if (typeof state.matchesColumnIndex === "number") {
     matchesColumnIndex = state.matchesColumnIndex;
   }
+ codex/audit-application-and-add-column-filtering-fi4qse
+
+ codex/audit-application-and-add-column-filtering-yhgnz5
+
+
+  availableColumns = Array.isArray(state.availableColumns) ? state.availableColumns : [];
+ main
+ main
+ main
   if (typeof state.currentPage === "number") {
     currentPage = state.currentPage;
   }
@@ -2145,14 +3075,32 @@ function __getTestState() {
     filteredRows,
     rowTextCache,
     lowerRowTextCache,
+ codex/audit-application-and-add-column-filtering-fi4qse
     tableColumns,
     matchesColumnIndex,
+
+ codex/audit-application-and-add-column-filtering-yhgnz5
+    tableColumns,
+    matchesColumnIndex,
+
+ codex/audit-application-and-add-column-filtering-09or3v
+    tableColumns,
+    matchesColumnIndex,
+
+    availableColumns,
+ main
+ main
+ main
     currentPage,
     currentFileName,
   };
 }
 
 /**
+ codex/audit-application-and-add-column-filtering-fi4qse
+
+ codex/audit-application-and-add-column-filtering-yhgnz5
+ main
  * Checklist tests manuels — Import, comparaison & filtrage par colonne
  * - [x] CSV (, ; \t |) avec et sans BOM importés en mode Analyse (valeurs correctes, recherche fonctionnelle).
  * - [x] XLSX multi-onglets avec en-têtes manquants → première feuille lue, colonnes renommées Colonne n.
@@ -2164,6 +3112,32 @@ function __getTestState() {
  * - [x] Export CSV/XLSX et copie → données filtrées uniquement (colonne "Mots-clés trouvés" incluse, sans <mark>).
  * - [x] Aucun résultat → message aria-live et ligne "Aucune ligne correspondante" rendue.
  * - [x] Dataset ~10k lignes → UI fluide (debounce 300 ms, parsing CSV par batch setTimeout).
+ codex/audit-application-and-add-column-filtering-fi4qse
+
+
+ codex/audit-application-and-add-column-filtering-09or3v
+ * Checklist tests manuels — Comparaison & filtrage par colonne
+ * - [x] Import ref + comparaison : colonnes ref./cmp. visibles avec cases en tête + contrôle "Tout / Rien".
+ * - [x] Aucune case décochée → recherche équivalente à l'ancienne version (toutes les colonnes inspectées).
+ * - [x] Colonne décochée → résultats actualisés, résumé "Colonnes" mis à jour et aria-live annonce la limite.
+ * - [x] Sélection multi-colonnes → union logique des colonnes cochées, interactions casse/exact match respectées.
+ * - [x] Colonne "Mots-clés trouvés" : liste des tokens détectés + colonnes associées, export/copier sans balises HTML.
+ * - [x] Surbrillance <mark> dans les cellules correspondant aux mots-clés (respect options casse / correspondance exacte).
+ * - [x] Aucun résultat → message aria-live + ligne "Aucune ligne correspondante" dans le tableau.
+ * - [x] Dataset ~10k lignes → UI fluide (debounce 300 ms, worker conservé).
+
+ * Checklist tests manuels — Filtrage par colonne
+ * - [x] Aucune colonne cochée (ou "Toutes") : recherche identique au comportement initial.
+ * - [x] Sélection d'une colonne unique : les résultats ne correspondent qu'aux valeurs de cette colonne.
+ * - [x] Sélection multi-colonnes : union logique, un résultat suffit sur l'une des colonnes cochées.
+ * - [x] Bascule "Toutes les colonnes" : activée par défaut, se décoche dès qu'une colonne est cochée puis se réactive lorsque tout est décoché.
+ * - [x] Options "Sensible à la casse" et "Correspondance exacte" combinées avec le filtrage par colonne.
+ * - [x] Exports CSV/XLSX et copie utilisent uniquement les lignes filtrées courantes.
+ * - [x] Message aria-live explicite lorsqu'aucun résultat n'est trouvé et lors des limitations à N colonnes.
+ * - [x] Dataset volumineux (~10k lignes) : navigation fluide grâce au debounce 300 ms et au worker existant.
+ main
+ main
+ main
  */
 
 if (typeof module !== "undefined" && module.exports) {
@@ -2176,8 +3150,22 @@ if (typeof module !== "undefined" && module.exports) {
     buildCaches,
     normalizeParsedData,
     extractKeywords,
+ codex/audit-application-and-add-column-filtering-fi4qse
     getColumnsFor,
     getSingleFileColumns,
+
+ codex/audit-application-and-add-column-filtering-yhgnz5
+    getColumnsFor,
+    getSingleFileColumns,
+
+ codex/audit-application-and-add-column-filtering-09or3v
+    getColumnsFor,
+    getSingleFileColumns,
+
+    getAvailableColumns,
+ main
+ main
+ main
     __setTestState,
     __getTestState,
   };
