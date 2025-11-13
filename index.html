@@ -94,6 +94,10 @@
             disabled
           >
             <legend>Rechercher dans</legend>
+ codex/audit-application-and-add-column-filtering-yhgnz5
+
+codex/audit-application-and-add-column-filtering-09or3v
+ main
             <p id="column-filter-label" class="column-filter__summary">Colonnes : Toutes</p>
             <p
               id="column-filter-live"
@@ -101,6 +105,40 @@
               aria-live="polite"
               role="status"
             ></p>
+ codex/audit-application-and-add-column-filtering-yhgnz5
+
+
+            <button
+              type="button"
+              id="column-filter-toggle"
+              class="button button--ghost column-filter__toggle"
+              aria-haspopup="true"
+              aria-expanded="false"
+              aria-controls="column-filter-menu"
+            >
+              <span id="column-filter-label">Colonnes : Toutes</span>
+            </button>
+            <div
+              id="column-filter-menu"
+              class="column-filter__menu"
+              role="listbox"
+              aria-multiselectable="true"
+              hidden
+            >
+              <label class="checkbox column-filter__option">
+                <input
+                  type="checkbox"
+                  id="column-filter-all"
+                  data-column-key="__all"
+                  checked
+                />
+                Toutes les colonnes
+              </label>
+              <div id="column-filter-options" class="column-filter__options"></div>
+            </div>
+            <p id="column-filter-live" class="visually-hidden" aria-live="polite"></p>
+ main
+ main
           </fieldset>
           <label class="checkbox">
             <input id="case-sensitive" type="checkbox" /> Sensible à la casse
