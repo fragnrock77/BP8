@@ -8,6 +8,8 @@ const {
   buildCaches,
   normalizeParsedData,
   extractKeywords,
+  getColumnsFor,
+  getSingleFileColumns,
   __setTestState,
   __getTestState,
 } = require('../app.js');
@@ -31,12 +33,15 @@ const SAMPLE_ROWS = [
 ];
 
 function resetStateForTests() {
+  const columns = getSingleFileColumns(['Name', 'Plan', 'Status'], SAMPLE_ROWS);
   __setTestState({
     headers: ['Name', 'Plan', 'Status'],
     rawRows: SAMPLE_ROWS,
     filteredRows: SAMPLE_ROWS.slice(),
     rowTextCache: [],
     lowerRowTextCache: [],
+    tableColumns: columns,
+    matchesColumnIndex: -1,
     currentPage: 1,
     currentFileName: 'sample',
   });
@@ -129,7 +134,8 @@ test('buildCaches keeps caches synchronised', () => {
   const state = __getTestState();
   assert.strictEqual(state.rawRows.length, 4);
   assert.strictEqual(state.rowTextCache.length, 4);
-  assert.ok(state.lowerRowTextCache[0].includes('alice'));
+  assert.ok(Array.isArray(state.rowTextCache[0]));
+  assert.strictEqual(state.lowerRowTextCache[0][0], 'alice');
 });
 
 resetStateForTests();
@@ -159,6 +165,50 @@ test('extractKeywords returns unique trimmed entries', () => {
     ['beta', null],
   ]);
   assert.deepStrictEqual(keywords, ['Alpha', 'beta', 'Gamma']);
+});
+
+resetStateForTests();
+
+test('getColumnsFor prefixes labels for comparison datasets', () => {
+  const columns = getColumnsFor('ref', [['A', 'B', 'C']], []);
+  assert.deepStrictEqual(columns.map((col) => col.label), [
+    'ref.Colonne 1',
+    'ref.Colonne 2',
+    'ref.Colonne 3',
+  ]);
+});
+
+test('getSingleFileColumns keeps display labels without prefixes', () => {
+  const columns = getSingleFileColumns(['Nom', 'Âge'], [
+    ['Alice', '30'],
+    ['Bob', '28'],
+  ]);
+  assert.deepStrictEqual(columns.map((col) => col.label), ['Nom', 'Âge']);
+});
+
+resetStateForTests();
+
+test('evaluateQuery honours explicit column restriction', () => {
+  const indexes = evaluateQuery(tokenizeQuery('premium'), {
+    caseSensitive: false,
+    exactMatch: false,
+    columnIndexes: [1],
+  });
+  assert.deepStrictEqual(indexes, [0, 2, 3]);
+
+  const nameIndexes = evaluateQuery(tokenizeQuery('alice'), {
+    caseSensitive: false,
+    exactMatch: false,
+    columnIndexes: [0],
+  });
+  assert.deepStrictEqual(nameIndexes, [0]);
+
+  const restrictedIndexes = evaluateQuery(tokenizeQuery('alice'), {
+    caseSensitive: false,
+    exactMatch: false,
+    columnIndexes: [1],
+  });
+  assert.deepStrictEqual(restrictedIndexes, []);
 });
 
 const failed = results.filter((result) => result.status === 'failed');

@@ -191,6 +191,41 @@ input[type="file"] {
   color: var(--text-muted);
 }
 
+.spinner {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+  color: var(--text-muted);
+}
+
+.spinner[hidden] {
+  display: none !important;
+}
+
+.spinner__icon {
+  width: 1.25rem;
+  height: 1.25rem;
+  border-radius: 50%;
+  border: 3px solid rgba(37, 99, 235, 0.25);
+  border-top-color: var(--accent);
+  animation: spinner-rotate 0.75s linear infinite;
+}
+
+.spinner__label {
+  font-weight: 600;
+  color: var(--text);
+}
+
+@keyframes spinner-rotate {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .error {
   margin-top: 0.75rem;
   color: var(--danger);
@@ -217,6 +252,46 @@ input[type="file"] {
   font-weight: 500;
 }
 
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  border: 0;
+  white-space: nowrap;
+}
+
+.column-filter {
+  position: relative;
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  background: var(--surface-alt);
+  min-width: 0;
+}
+
+.column-filter legend {
+  font-weight: 600;
+  font-size: 0.95rem;
+  margin-bottom: 0.5rem;
+}
+
+.column-filter[disabled] {
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+.column-filter__summary {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
 .table-wrapper {
   max-height: min(60vh, 600px);
   overflow: auto;
@@ -238,6 +313,73 @@ thead th {
   text-align: left;
   padding: 0.75rem;
   border-bottom: 1px solid var(--border);
+}
+
+.table__header-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  align-items: flex-start;
+}
+
+.table__header-label {
+  font-weight: 600;
+}
+
+.col-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.col-toggle__input {
+  width: 1rem;
+  height: 1rem;
+  accent-color: var(--accent);
+}
+
+.col-toggle__input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 0.25rem;
+}
+
+.col-toggle:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 0.5rem;
+  background: rgba(37, 99, 235, 0.12);
+}
+
+.col-toggle__text {
+  font-size: 0.7rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+
+.col-toggle--all {
+  color: var(--text-muted);
+}
+
+.table__header--matches {
+  min-width: 200px;
+}
+
+mark {
+  background: rgba(37, 99, 235, 0.2);
+  color: inherit;
+  border-radius: 0.25rem;
+  padding: 0 0.1em;
+}
+
+.matches-cell {
+  white-space: normal;
+  word-break: break-word;
 }
 
 tbody tr:nth-child(even) {
