@@ -285,15 +285,20 @@ input[type="file"] {
   pointer-events: none;
 }
 
+ codex/audit-application-and-add-column-filtering-fi4qse
+
  codex/audit-application-and-add-column-filtering-yhgnz5
 
  codex/audit-application-and-add-column-filtering-09or3v
+ main
  main
 .column-filter__summary {
   margin: 0;
   font-size: 0.95rem;
   font-weight: 600;
   color: var(--text-muted);
+ codex/audit-application-and-add-column-filtering-fi4qse
+
  codex/audit-application-and-add-column-filtering-yhgnz5
 
 
@@ -342,6 +347,7 @@ input[type="file"] {
   outline-offset: 2px;
   border-radius: 0.5rem;
   background: rgba(37, 99, 235, 0.1);
+ main
  main
  main
 }
